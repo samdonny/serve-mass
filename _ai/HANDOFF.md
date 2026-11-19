@@ -1,2 +1,3 @@
 # Handoff
 - 2026-11-19 (Claude): Built v1 — 11 core sections, 2 extras, 51 path stops incl. checkpoints and run-throughs up to a full-Mass run. Every stop driven end-to-end by a test script in the browser; spaced revision checked with a +1 day clock shift. Deployed to GitHub Pages. Main source for the server's movements: ICC "Low Mass, One Server" guide (latinmassomaha.org); Latin from the 1962 Ordo.
+- 2026-11-20 (Claude): v2 from Sam's plane feedback — in-order line-by-line mastery, English hints that fade, context strip, Father's-line and next-line questions, Latin-heavy revision in Mass order. v1 progress migrated (practice stops regrouped; ticked only if all items already learned). SW cache servemass-v2.

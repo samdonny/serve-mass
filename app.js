@@ -34,10 +34,10 @@ function groupSteps(sec) {
   const groups = []; let cur = [], w = 0;
   sec.steps.forEach((st, i) => {
     cur.push(i);
-    if (!st.alias) w += st.type === 'do' ? 0.6 : (words(st.s).length >= 10 ? 2 : 1);
-    if (w >= 4.5) { groups.push(cur); cur = []; w = 0; }
+    if (!st.alias) w += st.type === 'do' ? 0.4 : (words(st.s).length >= 10 ? 2 : 1);
+    if (w >= 3.5) { groups.push(cur); cur = []; w = 0; }
   });
-  if (cur.length) { if (groups.length && cur.every(i => sec.steps[i].alias)) groups[groups.length - 1].push(...cur); else groups.push(cur); }
+  if (cur.length) { if (groups.length && w < 1) groups[groups.length - 1].push(...cur); else groups.push(cur); }
   return groups;
 }
 function buildStops(secs, withRuns) {
@@ -67,13 +67,26 @@ const STOP = {}; PATH.concat(XPATH).forEach(s => STOP[s.id] = s);
 // ───────── storage
 const KEY = 'servemass-v1';
 let S;
-function blank() { return { v: 1, items: {}, stops: {}, lastActive: 0, prevActive: 0, studyMs: 0, days: {}, settings: { offset: 0, theme: '' } }; }
+function blank() { return { v: 2, items: {}, stops: {}, lastActive: 0, prevActive: 0, studyMs: 0, days: {}, settings: { offset: 0, theme: '' } }; }
 function load() { try { S = JSON.parse(localStorage.getItem(KEY)) || blank(); } catch (e) { S = blank(); } S.settings = Object.assign(blank().settings, S.settings || {}); }
 function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { } }
 const now = () => Date.now() + (S.settings.offset || 0);
 load();
 if (S.settings.theme) document.documentElement.dataset.theme = S.settings.theme;
-S.prevActive = S.lastActive; save();
+S.prevActive = S.lastActive;
+// v1 → v2: practice stops were regrouped. Learned lines and their revision schedule are untouched;
+// a new practice stop counts as done when everything in it was already learned.
+if ((S.v || 1) < 2) {
+  const had = Object.keys(S.stops).length > 0;
+  PATH.concat(XPATH).filter(st => st.kind === 'practice').forEach(st => {
+    const sec = ALLSEC.find(x => x.id === st.sec);
+    const ids = st.range.map(i => sec.steps[i]).filter(x => !x.alias).map(x => x.id);
+    if (ids.every(id => S.items[id] && S.items[id].learned)) S.stops[st.id] = { done: true, at: now(), migrated: true };
+    else delete S.stops[st.id];
+  });
+  S.v = 2; S.whatsNew = had;
+}
+save();
 
 function rec(id) { id = realId(id); return S.items[id] || (S.items[id] = { st: 0, due: 0, n: 0, ok: 0, lapses: 0, last: 0, learned: false }); }
 const learned = id => !!(S.items[realId(id)] && S.items[realId(id)].learned);
@@ -241,7 +254,15 @@ function homeHTML() {
   let welcome = !S.prevActive ? `<p>Welcome. Start at the top: everything is <b>explained before you're asked about it</b>. Each stop is about 5 minutes. Come back whenever — the app tracks what's fading and revises it first.</p>`
     : `<p>Last session: <b>${ago(gap)} ago</b>. ${d.length ? `<b>${d.length}</b> thing${d.length > 1 ? 's are' : ' is'} due for revision — they come first.` : 'Nothing is due yet — straight on to new material.'}</p>`;
   if (gap > 20 * HOUR && done) welcome += `<p class="note">It's been a while — consider a 3-minute skim of the <b>Server's card</b> (📜) before you continue.</p>`;
-  return `<h1>Serve the Low Mass</h1>
+  const news = S.whatsNew ? `<div class="card" style="border-color:var(--acc2)"><b>New in this version</b><ul style="margin:6px 0;padding-left:20px">
+    <li>Practice now goes <b>one Latin line at a time, in order</b> — each line is drilled until you can write it twice from memory, then you say <b>everything so far from the top</b>.</li>
+    <li>New lines start with the <b>English meaning shown</b>; the help is taken away step by step.</li>
+    <li>Every question shows <b>where you are</b> in the Mass and what came just before.</li>
+    <li>New questions on <b>Father's lines</b>, <b>"what's your next line?"</b> and <b>putting your lines in order</b>.</li>
+    <li>Revision comes in Mass order and is mostly Latin.</li></ul>
+    <small class="mute">Your progress is kept. Practice stops were regrouped: ones where you'd already learned everything are ticked; the rest are open. To go over a finished section the new way, use Redo on the Path tab.</small>
+    <button class="wide" data-act="dismissNew">Got it</button></div>` : '';
+  return `<h1>Serve the Low Mass</h1>${news}
   <div class="card">${welcome}
     <button class="pri wide" data-act="continue">${d.length ? `Revise ${Math.min(d.length, 12)}${nx ? ' → then ' : ''}` : ''}${nx ? (d.length ? esc(nx.title) : 'Continue: ' + esc(nx.title)) : d.length ? '' : 'All stops done — come back later for revision'}</button>
     ${d.length ? `<button class="wide" data-act="review">Only revise (${d.length} due)</button>` : ''}
@@ -338,16 +359,58 @@ function startLearn(stop) {
 }
 
 // ───────── Questions
+// v2: help is removed rung by rung; the English meaning shows until the last two rungs,
+// which must both be answered in full, from memory, in a row.
 function ladderFor(id) {
   id = realId(id);
   if (isWhole(id)) return ['initials', 'full'];
   const st = STEP[id];
-  if (st.type === 'do') return st.zone ? ['mc', 'map', 'mc'] : ['mc', 'mc'];
+  if (st.type === 'do') return ['mc'];
   const n = words(st.s).length;
-  if (n <= 2) return ['mc', 'full'];
-  if (n <= 4) return ['mc', 'cloze2', 'full'];
-  if (n <= 9) return ['mc', 'tiles', 'cloze2', 'initials', 'full'];
-  return ['mc', 'tiles', 'cloze1', 'cloze2', 'initials', 'full'];
+  if (n <= 2) return ['intro', 'mc', 'full', 'full'];
+  if (n <= 4) return ['intro', 'mc', 'cloze2', 'full', 'full'];
+  if (n <= 9) return ['intro', 'mc', 'tiles', 'cloze2', 'initials', 'full', 'full'];
+  return ['intro', 'mc', 'tiles', 'cloze1', 'cloze2', 'initials', 'full', 'full'];
+}
+const hintOn = (lad, pos) => pos < lad.indexOf('full');
+// Father's spoken Latin for a step, without stage directions; null when the cue isn't his words.
+function fatherLatin(st) {
+  if (!st || st.type !== 'say' || /\(continue/i.test(st.cue)) return null;
+  const t = st.cue.replace(/\s*\([^)]*\)\s*/g, ' ').replace(/\s+/g, ' ').trim();
+  return words(t).length ? t : null;
+}
+const ORDER = {}; ALLSEC.forEach((sec, si) => sec.steps.forEach((st, i) => ORDER[st.id] = si * 1000 + i));
+const sayStepsOf = sec => sec.steps.filter(s => s.type === 'say');
+function contextStrip(stepId, noPrev) {
+  const st = STEP[stepId]; if (!st) return '';
+  const sec = SEC_OF[stepId], i = sec.steps.indexOf(st), prev = sec.steps[i - 1];
+  const mine = sayStepsOf(sec), k = mine.indexOf(st);
+  let p = '<i>start of this section</i>';
+  if (prev) p = prev.type === 'do' ? `▸ ${esc(prev.label)}` : `${fatherLatin(prev) ? `Father: <i>${esc(fatherLatin(prev))}</i><br>` : ''}You: <span class="lat">${esc(textOf(prev.id))}</span>`;
+  return `<div class="ctx"><small><b>${esc(sec.short)}</b>${k >= 0 ? ` · your line ${k + 1} of ${mine.length}` : ''}</small>${noPrev ? '' : `<div><small class="mute">Just before:</small><br><small>${p}</small></div>`}</div>`;
+}
+function prevMine(stepId) { // your previous Latin line in the section (different text)
+  const sec = SEC_OF[stepId], mine = sayStepsOf(sec), k = mine.indexOf(STEP[stepId]);
+  for (let j = k - 1; j >= 0; j--) if (norm(textOf(mine[j].id)) !== norm(textOf(stepId))) return mine[j];
+  return null;
+}
+function fatherOpts(stepId) {
+  const sec = SEC_OF[stepId], right = fatherLatin(STEP[stepId]);
+  const pool = [...new Set(sec.steps.map(fatherLatin).filter(t => t && norm(t) !== norm(right)))];
+  const extra = [...new Set(CORE.flatMap(s => s.steps.map(fatherLatin)).filter(t => t && norm(t) !== norm(right) && !pool.includes(t)))];
+  return shuffle([right].concat(shuffle(pool).slice(0, 3), shuffle(extra)).slice(0, 4));
+}
+function fatherMCQ(stepId, tag) { return { qt: 'fatherMC', step: stepId, id: null, fopts: fatherOpts(stepId), right: fatherLatin(STEP[stepId]), tag: tag || "Father's line" }; }
+function fatherClozeQ(stepId, tag) { const t = fatherLatin(STEP[stepId]); return { qt: 'cloze1', step: stepId, id: null, text: t, father: true, rate: Math.min(0.5, 3 / Math.max(3, words(t).length)), tag: tag || "Father's line" }; }
+function nextQ(stepId, hint, tag) { return { qt: 'next', step: stepId, id: realId(stepId), prev: prevMine(stepId).id, hint, tag: tag || 'what comes next' }; }
+function myOrderQ(sec) {
+  const seen = new Set(), ids = [];
+  sayStepsOf(sec).forEach(s => { const t = norm(textOf(s.id)); if (!seen.has(t) && words(textOf(s.id)).length <= 24) { seen.add(t); ids.push(s.id); } });
+  if (ids.length < 3) return [];
+  return windows(ids, 8).map((w, i, a) => {
+    const items = w.map(id => ({ id, label: textOf(id) }));
+    return { qt: 'order', items, shuf: shuffle(items.map((x, j) => j)), title: `Put YOUR Latin lines in order${a.length > 1 ? ` (part ${i + 1} of ${a.length})` : ''}.`, tag: 'your lines in order', lat: true };
+  });
 }
 function reviewType(id) {
   const r = rec(id), k = kindOf(id);
@@ -364,11 +427,16 @@ function sayOptions(id) {
 }
 function qHeader(q) {
   const st = cueStep(q), id = q.id;
-  if (q.qt === 'order' || q.qt === 'kyrie') return '';
-  if (kindOf(id) === 'do') { const s = STEP[realId(id)]; const t = st && st.id !== realId(id) ? st : s; return `<div class="cue" style="font-style:normal">${esc(t.when)}</div>`; }
+  if (q.qt === 'order') return '';
+  if (q.qt === 'fatherMC') { const s = STEP[q.step]; return contextStrip(q.step, true) + `<p class="mute" style="margin:0">Your line:</p><div class="ans">${esc(textOf(q.step))}</div><p><b>What does Father say just before it?</b></p>`; }
+  if (q.father) { const s = STEP[q.step]; return contextStrip(q.step) + `<p><b>Father's line — fill the gaps.</b></p>${s.cueEn ? `<small class="mute">${esc(s.cueEn)}</small>` : ''}`; }
+  if (q.qt === 'next') { const p = STEP[q.prev]; return `<div class="ctx"><small><b>${esc(SEC_OF[q.step].short)}</b></small></div><p class="mute" style="margin:0">Your previous line was:</p><div class="ans" style="font-weight:400">${esc(textOf(p.id))}</div><p><b>What is your NEXT line?</b> <small class="mute">(Father says something in between — you give your answer.)</small></p>${q.hint ? `<small class="mute">Meaning: ${esc(STEP[realId(q.id)].en || '')}</small>` : ''}`; }
+  if (kindOf(id) === 'do') { const s = STEP[realId(id)]; const t = st && st.id !== realId(id) ? st : s; return contextStrip(t.id) + `<div class="cue" style="font-style:normal">${esc(t.when)}</div>`; }
   const c = st || STEP[realId(id)];
   if (isWhole(realId(id)) && (!st || st.id === id)) { const w = WHOLE[realId(id)]; return `<p><b>Say ${esc(w.title.toLowerCase())}</b>${w.joinCue ? ' <small class="mute">(just your lines, in order)</small>' : ''}</p>`; }
-  return `<p class="mute" style="margin:0">Father says:</p><div class="cue">${esc(c.cue)}</div>${c.cueEn ? `<small class="mute">${esc(c.cueEn)}</small>` : ''}`;
+  const me = STEP[realId(id)];
+  const hint = q.hint && q.qt !== 'intro' && me && me.en ? `<div class="hint">Your line means: <b>${esc(me.en)}</b></div>` : '';
+  return contextStrip(c.id) + `<p class="mute" style="margin:0">Father says:</p><div class="cue">${esc(c.cue)}</div>${c.cueEn && c.cueEn !== (me && me.en) ? `<small class="mute">${esc(c.cueEn)}</small>` : ''}${hint}`;
 }
 function mcCls(q, o, right, i) { if (!q.answered) return ''; if (norm(o) === norm(right)) return ' right'; return q.picked === i ? ' wrongc' : ''; }
 function blanksFor(text, rate) {
@@ -381,6 +449,13 @@ function initialsOf(text) { return words(text).map(w => w.replace(/([A-Za-zæœ�
 function qBody(q) {
   const id = q.id;
   switch (q.qt) {
+    case 'intro': {
+      const st = STEP[realId(id)], t = textOf(id);
+      return `<p class="mute" style="margin:6px 0 0">New line — your answer is:</p><div class="ans" style="font-size:1.3rem;margin:6px 0">${esc(t)} ${spk(t)}</div>
+        <p style="margin:4px 0"><b>${esc(st.en)}</b></p>${st.say ? `<p class="mute" style="margin:4px 0"><small>say: ${esc(st.say)}</small></p>` : ''}${st.gloss ? `<p class="mute" style="margin:4px 0"><small>${esc(st.gloss)}</small></p>` : ''}${st.hook ? `<p style="margin:4px 0"><small>💡 ${esc(st.hook)}</small></p>` : ''}${st.note ? `<p style="margin:4px 0"><small>📝 ${esc(st.note)}</small></p>` : ''}
+        <p class="note">Say it aloud <b>twice</b>, looking at it. Then once more looking away.</p><button class="pri wide" data-act="introok">I've said it — test me</button>`;
+    }
+    case 'fatherMC': return q.fopts.map((o, i) => `<button class="opt lat${mcCls(q, o, q.right, i)}" data-opt="${i}" ${q.answered ? 'disabled' : ''}>${esc(o)}</button>`).join('');
     case 'mc': {
       if (kindOf(id) === 'do') {
         const s = STEP[realId(id)];
@@ -399,13 +474,13 @@ function qBody(q) {
         <div class="row"><button data-act="clear">Clear</button><button class="pri" data-act="check" ${q.built.length === q.pool.length ? '' : 'disabled'}>Check</button></div>`;
     }
     case 'cloze1': case 'cloze2': {
-      q.bl = q.bl || blanksFor(textOf(id), q.qt === 'cloze1' ? 0.3 : 0.6);
+      q.bl = q.bl || blanksFor(q.text || textOf(id), q.rate || (q.qt === 'cloze1' ? 0.3 : 0.6));
       return `<p><b>Fill the missing words.</b></p><div class="lat" style="font-size:1.08rem;line-height:2.2">${q.bl.W.map((w, i) => q.bl.pick.has(i) ? `<input class="blank" type="text" data-bi="${i}" autocomplete="off" autocapitalize="off" spellcheck="false" size="${Math.max(3, norm(w).length + 1)}">` : esc(w)).join(' ')}</div>
         <button class="pri wide" data-act="check">Check</button>`;
     }
-    case 'initials': case 'full': {
+    case 'initials': case 'full': case 'next': {
       const hint = q.qt === 'initials' ? `<p class="lat mute" style="letter-spacing:.04em">${esc(initialsOf(textOf(id)))}</p>` : '';
-      return `<p><b>${q.qt === 'initials' ? 'Write it out — first letters given.' : 'Write it out in full.'}</b> <small class="mute">Spelling is forgiven; the words and their order matter.</small></p>${hint}
+      return `<p><b>${q.qt === 'initials' ? 'Write it out — first letters given.' : q.qt === 'next' ? 'Write it out.' : 'Write it out in full.'}</b> <small class="mute">Spelling is forgiven; the words and their order matter.</small></p>${hint}
         <textarea id="ta" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Type the Latin…"></textarea>
         <button class="pri wide" data-act="check">Check</button>
         <button class="wide" data-act="aloud">🗣 I'll say it aloud instead → reveal</button>`;
@@ -413,7 +488,7 @@ function qBody(q) {
     case 'order': {
       q.built = q.built || [];
       return `<p><b>${esc(q.title || 'Put these in the order they happen.')}</b></p><ol class="built" style="display:block;padding-left:28px">${q.built.map((k, j) => `<li><button class="tile" style="text-align:left;font-family:inherit" data-unorder="${j}">${esc(q.items[k].label)}</button></li>`).join('') || '<span class="mute"><small>Tap below, first to last…</small></span>'}</ol>
-        <div>${q.shuf.map(k => q.built.includes(k) ? '' : `<button class="opt" data-order="${k}">${esc(q.items[k].label)}</button>`).join('')}</div>
+        <div>${q.shuf.map(k => q.built.includes(k) ? '' : `<button class="opt${q.lat ? ' lat' : ''}" data-order="${k}">${esc(q.items[k].label)}</button>`).join('')}</div>
         <div class="row"><button data-act="clear">Clear</button><button class="pri" data-act="check" ${q.built.length === q.items.length ? '' : 'disabled'}>Check</button></div>`;
     }
   }
@@ -457,7 +532,7 @@ function Session(o) {
       const head = f.v === 'ok' ? (f.typos ? '✓ Right (small slips — see the underlined words)' : '✓ Right') : f.v === 'close' ? '≈ Nearly — look at the red words' : '✗ Not quite';
       fb = `<div class="fb ${cls}"><b>${head}</b>${f.html ? `<div class="lat" style="margin-top:6px">${f.html}</div>` : ''}${f.extra || ''}</div><button class="pri wide" data-act="cont">Continue →</button>`;
     }
-    return top + `<div class="card">${qHeader(q)}${ss.fb && q.qt !== 'map' && q.qt !== 'mc' ? '' : qBody(q)}${fb}</div>`;
+    return top + `<div class="card">${qHeader(q)}${ss.fb && !['map', 'mc', 'fatherMC'].includes(q.qt) ? '' : qBody(q)}${fb}</div>`;
   };
   ss.progress = function () { return ss.prog ? ss.prog() : 0; };
   ss.answer = function (v, html, extra, typos) {
@@ -480,7 +555,7 @@ function Session(o) {
   };
   return ss;
 }
-function insertAt(arr, i, x) { arr.splice(Math.min(arr.length, i), 0, x); }
+function insertAt(arr, i, ...x) { arr.splice(Math.min(arr.length, i), 0, ...x); }
 function qFor(id, qt, step, extra) { return Object.assign({ id, qt, step: step || id }, extra || {}); }
 
 function chainQs(stepIds, level) { // run through steps in order
@@ -497,22 +572,40 @@ function windows(ids, size) { const out = []; for (let i = 0; i < ids.length; i 
 function startPractice(stop) {
   const sec = ALLSEC.find(s => s.id === stop.sec);
   const stepIds = stop.range.map(i => sec.steps[i].id);
-  const items = stepIds.filter(id => !STEP[id].alias);
   const ss = Session({ title: stop.title, stop });
-  const q0 = shuffle(items).map(id => ({ id, step: id, lad: ladderFor(id), pos: 0, firstTry: true }));
-  // keep the ladder interleaved: start each item at its first rung
-  ss.queue = q0;
-  let total = q0.reduce((a, q) => a + q.lad.length, 0) + 2;
-  ss.prog = () => 100 * ss.ok / total;
-  ss.phases.push(() => stepIds.length >= 3 && !sec.noOrder ? [Object.assign(orderQ(stepIds.length > 8 ? stepIds.slice(0, 8) : stepIds, 'Put this stretch in order.'), { tag: 'sequence' })].concat(stepIds.length > 8 ? [Object.assign(orderQ(stepIds.slice(8), 'And the rest of this stretch, in order.'), { tag: 'sequence' })] : []) : []);
-  ss.phases.push(() => { total = ss.ok + stepIds.length + 1; return chainQs(stepIds, 'full').map(q => Object.assign(q, { tag: 'run this stretch · ' + q.tag })); });
+  const mastered = []; // say steps finished in this stop, in Mass order
+  let at = 0;
+  const lineQ = sid => {
+    const st = STEP[sid];
+    if (st.type === 'do') return { id: sid, step: sid, lad: ['mc'], pos: 0 };
+    if (st.alias) { const n = words(textOf(sid)).length; return { id: realId(sid), step: sid, lad: learned(sid) ? ['full'] : n >= 6 ? ['initials', 'full'] : ['mc', 'full'], pos: 0, alias: true }; }
+    return { id: sid, step: sid, lad: ladderFor(sid), pos: 0 };
+  };
+  // one phase per step, strictly in order; a line is drilled back-to-back until it's solid
+  stepIds.forEach((sid, k) => ss.phases.push(() => { at = k; const q = lineQ(sid); q.tag = `step ${k + 1} of ${stepIds.length}`; q.hint = q.lad && hintOn(q.lad, 0); return [q]; }));
+  ss.phases.push(() => { at = stepIds.length; return stepIds.length >= 3 && !sec.noOrder ? windows(stepIds, 8).map((w, i, a) => Object.assign(orderQ(w, a.length > 1 ? `Put this stretch in order (part ${i + 1}).` : 'Put this stretch in order.'), { tag: 'sequence' })) : []; });
+  ss.phases.push(() => chainQs(stepIds, 'full').map(q => Object.assign(q, { tag: 'run this stretch · ' + q.tag })));
+  ss.prog = () => 100 * at / (stepIds.length + 2);
+  const fromTop = () => mastered.length < 2 ? [] : mastered.map((sid, j) => qFor(realId(sid), 'full', sid, { top: true, tag: `from the top · ${j + 1} of ${mastered.length}` }));
   ss.onAnswer = (q, v) => {
     if (q.lad) {
-      if (v === 'ok') { q.pos++; q.firstTry = false; if (q.pos >= q.lad.length) { markLearned(q.id); return; } insertAt(ss.queue, 2 + Math.floor(Math.random() * 2), q); }
-      else if (v === 'close') { q.firstTry = false; q.closes = (q.closes || 0) + 1; if (q.closes >= 2) { q.closes = 0; q.pos++; if (q.pos >= q.lad.length) { markLearned(q.id); return; } } insertAt(ss.queue, 2, q); }
-      else { q.pos = Math.max(0, q.pos - 1); q.firstTry = false; total++; insertAt(ss.queue, 2, q); }
-    } else if (q.qt === 'order') { if (v !== 'ok' && !q.retried) { const r = Object.assign({}, q, { retried: true, built: [], firstTry: false }); insertAt(ss.queue, 0, r); } }
-    else if (q.chain) { if (v !== 'ok') { grade(q.id, 'close'); if (!q.retried) ss.queue.push(Object.assign({}, q, { retried: true, firstTry: false, qt: kindOf(q.id) === 'do' ? 'mc' : q.qt, tag: 'again' })); } }
+      if (v === 'ok' || (v === 'close' && (q.closes = (q.closes || 0) + 1) >= 2)) { q.closes = 0; q.pos++; }
+      else if (v === 'bad') q.pos = Math.max(q.lad[0] === 'intro' ? 1 : 0, q.pos - 1);
+      if (q.pos < q.lad.length) { q.hint = hintOn(q.lad, q.pos); insertAt(ss.queue, 0, q); return; }
+      // line finished
+      if (!q.alias || !learned(q.id)) markLearned(q.id);
+      const st = STEP[q.step];
+      if (st.type === 'say') {
+        if (!mastered.some(m => norm(textOf(m)) === norm(textOf(q.step)))) mastered.push(q.step);
+        const extra = [];
+        if (fatherLatin(st) && !q.alias) extra.push(fatherMCQ(q.step));
+        if (!q.alias) extra.push(...fromTop());
+        ss.queue.unshift(...extra);
+      }
+    } else if (q.top) {
+      if (v !== 'ok' && !q.retried) insertAt(ss.queue, 0, Object.assign({}, q, { qt: words(textOf(q.id)).length >= 4 ? 'initials' : 'full', hint: true, retried: true, firstTry: false, tag: 'again, with a little help' }), Object.assign({}, q, { retried: true, firstTry: false, tag: 'once more, from memory' }));
+    } else if (q.qt === 'order') { if (v !== 'ok' && !q.retried) insertAt(ss.queue, 0, Object.assign({}, q, { retried: true, built: [], firstTry: false })); }
+    else if (q.chain) { if (v !== 'ok') { grade(q.id, 'close'); if (!q.retried) ss.queue.push(Object.assign({}, q, { retried: true, firstTry: false, tag: 'again' })); } }
   };
   ss.onFinish = pct => { S.stops[stop.id] = { done: true, at: now(), score: Math.max(pct, (S.stops[stop.id] || {}).score || 0) }; finishView(`Stop complete. ${ss.ok} right answers.`, stop, ss); };
   VIEW = ss; ss.nextQ();
@@ -522,12 +615,17 @@ function startCheck(stop) {
   const stepIds = sec.steps.map(s => s.id), items = itemsOfSec(sec).filter(id => !isWhole(id)), wholes = (sec.wholes || []).map(w => w.id);
   const ss = Session({ title: stop.title, stop });
   const orders = sec.noOrder ? [] : windows(stepIds, 7).map((w, i, a) => Object.assign(orderQ(w, a.length > 1 ? `Order part ${i + 1} of ${a.length} of this section.` : 'Put the whole section in order.'), { tag: 'sequence' }));
-  const recall = shuffle(items).map(id => qFor(id, kindOf(id) === 'do' ? (STEP[id].zone && Math.random() < .5 ? 'map' : 'mc') : 'full'));
+  // Latin in Mass order (with where-you-are shown); movements asked once each, map where there is one
+  const recall = items.map(id => qFor(id, kindOf(id) === 'do' ? (STEP[id].zone ? 'map' : 'mc') : 'full'));
+  const mine = sayStepsOf(sec).filter(st => !st.alias && prevMine(st.id));
+  const nexts = shuffle(mine).slice(0, 3).map(st => nextQ(st.id, false));
+  const fathers = shuffle(sec.steps.filter(st => fatherLatin(st) && words(fatherLatin(st)).length >= 3)).slice(0, 2).map(st => fatherClozeQ(st.id));
   const wh = wholes.map(id => qFor(id, learned(id) ? 'full' : 'initials'));
-  ss.queue = orders.concat(recall, wh);
+  ss.queue = orders.concat(sec.noOrder ? [] : myOrderQ(sec), recall, nexts, fathers, wh);
   const total = ss.queue.length; ss.prog = () => 100 * ss.n / (total + 0.0001);
   ss.onAnswer = (q, v) => {
     if (q.qt === 'order') { if (v !== 'ok' && !q.retried) ss.queue.push(Object.assign({}, q, { retried: true, built: [], firstTry: false })); return; }
+    if (!q.id || q.qt === 'next') { if (v !== 'ok' && !q.retried && q.qt === 'next') ss.queue.push(Object.assign({}, q, { retried: true, firstTry: false, hint: true })); return; }
     if (q.firstTry !== false) { if (isWhole(q.id) && v === 'ok') markLearned(q.id); else grade(q.id, v); }
     if (v !== 'ok' && !q.retried) {
       const easier = kindOf(q.id) === 'do' ? 'mc' : isWhole(q.id) ? 'initials' : (words(textOf(q.id)).length >= 4 ? 'cloze2' : 'full');
@@ -554,16 +652,28 @@ function startRun(stop) {
   VIEW = ss; ss.nextQ();
 }
 function startReview(ids, title, then) {
-  const t = now();
-  const pick = ids.slice().sort((a, b) => { const ra = rec(a), rb = rec(b); return (t - rb.due) / INT[rb.st - 1] - (t - ra.due) / INT[ra.st - 1]; }).slice(0, 12);
+  const t = now(), urg = id => { const r = rec(id); return (t - r.due) / INT[r.st - 1]; };
+  const byUrg = ids.slice().sort((a, b) => urg(b) - urg(a));
+  const lat = byUrg.filter(id => kindOf(id) !== 'do'), act = byUrg.filter(id => kindOf(id) === 'do');
+  const nA = Math.min(act.length, lat.length >= 9 ? 3 : 12 - lat.length); // movements ≤ a quarter when Latin is due
+  const pick = act.slice(0, nA).concat(lat.slice(0, 12 - nA));
+  const ord = id => ORDER[id] != null ? ORDER[id] : ORDER[WHOLE[id] ? WHOLE[id].of[0] : id] || 0;
+  pick.sort((a, b) => ord(a) - ord(b)); // in Mass order, so recall follows the flow
   const ss = Session({ title });
-  ss.queue = shuffle(pick).map(id => qFor(id, reviewType(id), null, { tag: 'revision' }));
+  ss.queue = [];
+  pick.forEach(id => {
+    ss.queue.push(qFor(id, reviewType(id), null, { tag: 'revision' }));
+    const st = STEP[id];
+    if (st && st.type === 'say' && Math.random() < 0.3) ss.queue.push(Math.random() < 0.5 && prevMine(id) ? nextQ(id, false, 'what comes next') : fatherLatin(st) ? fatherMCQ(id) : null);
+  });
+  ss.queue = ss.queue.filter(Boolean);
   const total = ss.queue.length; ss.prog = () => 100 * Math.min(ss.n, total) / total;
   ss.onAnswer = (q, v) => {
+    if (!q.id || q.qt === 'next') return;
     if (q.firstTry !== false) grade(q.id, v);
     if (v !== 'ok' && !q.retried) {
-      if (kindOf(q.id) !== 'do' && words(textOf(q.id)).length >= 4) insertAt(ss.queue, 2, Object.assign({}, q, { qt: 'cloze2', retried: true, firstTry: false, tag: 're-learn' }));
-      ss.queue.push(Object.assign({}, q, { retried: true, firstTry: false, tag: 're-learn' }));
+      if (kindOf(q.id) !== 'do' && words(textOf(q.id)).length >= 4) insertAt(ss.queue, 0, Object.assign({}, q, { qt: 'cloze2', hint: true, retried: true, firstTry: false, tag: 're-learn' }));
+      insertAt(ss.queue, kindOf(q.id) !== 'do' ? 1 : 2, Object.assign({}, q, { retried: true, firstTry: false, tag: 're-learn' }));
     }
   };
   ss.onFinish = pct => finishView(`Revision done: ${pct}% remembered first time.`, null, ss, then);
@@ -618,6 +728,7 @@ document.addEventListener('click', e => {
     case 'review': return startReview(due(CORE_ITEMS), 'Revision', null);
     case 'xreview': return startReview(due(EXTRA_ITEMS), 'Revision — extras', null);
     case 'cover': COVER = !COVER; render(); return;
+    case 'dismissNew': S.whatsNew = false; save(); render(); return;
     case 'export': $('#io').value = btoa(unescape(encodeURIComponent(JSON.stringify(S)))); $('#io').select(); return;
     case 'import': try { const o = JSON.parse(decodeURIComponent(escape(atob($('#io').value.trim())))); if (!o.items) throw 0; S = o; save(); alert('Progress loaded.'); go('home'); } catch (err) { alert('That code didn\'t work.'); } return;
     case 'reset': if (confirm('Erase all progress?')) { S = blank(); save(); go('home'); } return;
@@ -627,6 +738,12 @@ function sessionClick(ss, b, d) {
   const q = ss.cur;
   if (d.act === 'cont') return ss.nextQ();
   if (ss.fb) return;
+  if (d.act === 'introok' && q.qt === 'intro') { tick(); ss.onAnswer(q, 'ok'); save(); return ss.nextQ(); }
+  if (d.opt !== undefined && q.qt === 'fatherMC') {
+    const ok = norm(q.fopts[+d.opt]) === norm(q.right); q.picked = +d.opt;
+    const en = STEP[q.step].cueEn;
+    return ss.answer(ok ? 'ok' : 'bad', ok ? '' : `<span class="ans">${esc(q.right)}</span>`, `${spk(q.right)} <small class="mute">${esc(en || '')}</small>`);
+  }
   if (d.opt !== undefined && q.qt === 'mc') {
     const pickedTxt = q.opts[+d.opt];
     const right = kindOf(q.id) === 'do' ? STEP[realId(q.id)].a : textOf(q.id);
@@ -645,8 +762,9 @@ function sessionClick(ss, b, d) {
     if (d.unorder !== undefined) { q.built.splice(+d.unorder, 1); render(); return; }
     if (d.act === 'clear') { q.built = []; render(); return; }
     if (d.act === 'check') {
-      const ok = q.built.every((k, i) => k === i);
-      const html = '<ol style="margin:4px 0;padding-left:22px">' + q.items.map((it, i) => `<li class="${q.built[i] === i ? 'w-ok' : ''}">${esc(it.label)}${q.built[i] === i ? '' : ' <small>←</small>'}</li>`).join('') + '</ol>';
+      const good = i => q.items[q.built[i]].label === q.items[i].label; // identical labels are interchangeable
+      const ok = q.built.every((k, i) => good(i));
+      const html = '<ol style="margin:4px 0;padding-left:22px">' + q.items.map((it, i) => `<li class="${good(i) ? 'w-ok' : ''}">${esc(it.label)}${good(i) ? '' : ' <small>←</small>'}</li>`).join('') + '</ol>';
       return ss.answer(ok ? 'ok' : 'bad', ok ? '' : 'The right order:' + html);
     }
   }
@@ -659,7 +777,7 @@ function sessionClick(ss, b, d) {
       return ss.answer(v, html);
     }
   }
-  if (q.qt === 'initials' || q.qt === 'full') {
+  if (q.qt === 'initials' || q.qt === 'full' || q.qt === 'next') {
     if (d.act === 'check') { const g = $('#ta').value; if (!g.trim()) return; const m = mark(textOf(q.id), g); return ss.answer(m.v, m.html, '', m.typos); }
     if (d.act === 'aloud') {
       ss.fb = { v: 'self', html: '' };
@@ -683,7 +801,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Enter' && VIEW && VIE
 
 // ───────── offline
 if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) {
-  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v1').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
+  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v2').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
 }
 window.__SM = { view: () => VIEW, realId, kindOf, S: () => S, PATH, mark, CORE_ITEMS, grade, STEP, textOf };
 render();
