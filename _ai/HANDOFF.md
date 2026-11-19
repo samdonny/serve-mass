@@ -1,0 +1,2 @@
+# Handoff
+- 2026-11-19 (Claude): Built v1 — 11 core sections, 2 extras, 51 path stops incl. checkpoints and run-throughs up to a full-Mass run. Every stop driven end-to-end by a test script in the browser; spaced revision checked with a +1 day clock shift. Deployed to GitHub Pages. Main source for the server's movements: ICC "Low Mass, One Server" guide (latinmassomaha.org); Latin from the 1962 Ordo.
