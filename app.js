@@ -76,16 +76,21 @@ if (S.settings.theme) document.documentElement.dataset.theme = S.settings.theme;
 S.prevActive = S.lastActive;
 // v1 → v2: practice stops were regrouped. Learned lines and their revision schedule are untouched;
 // a new practice stop counts as done when everything in it was already learned.
-if ((S.v || 1) < 2) {
-  const had = Object.keys(S.stops).length > 0;
-  PATH.concat(XPATH).filter(st => st.kind === 'practice').forEach(st => {
-    const sec = ALLSEC.find(x => x.id === st.sec);
-    const ids = st.range.map(i => sec.steps[i]).filter(x => !x.alias).map(x => x.id);
-    if (ids.every(id => S.items[id] && S.items[id].learned)) S.stops[st.id] = { done: true, at: now(), migrated: true };
-    else delete S.stops[st.id];
+function migrate(st) {
+  if ((st.v || 1) >= 2) return st;
+  const had = Object.keys(st.stops || {}).length > 0;
+  st.stops = st.stops || {}; st.items = st.items || {};
+  Object.keys(st.stops).forEach(k => { if (!STOP[k]) delete st.stops[k]; });
+  PATH.concat(XPATH).filter(x => x.kind === 'practice').forEach(x => {
+    const sec = ALLSEC.find(y => y.id === x.sec);
+    const ids = x.range.map(i => sec.steps[i]).filter(y => !y.alias).map(y => y.id);
+    if (ids.every(id => st.items[id] && st.items[id].learned)) st.stops[x.id] = { done: true, at: Date.now(), migrated: true };
+    else delete st.stops[x.id];
   });
-  S.v = 2; S.whatsNew = had;
+  st.v = 2; st.whatsNew = had;
+  return st;
 }
+migrate(S);
 save();
 
 function rec(id) { id = realId(id); return S.items[id] || (S.items[id] = { st: 0, due: 0, n: 0, ok: 0, lapses: 0, last: 0, learned: false }); }
@@ -755,7 +760,7 @@ function importCode(text) {
   try { const o = JSON.parse(decodeURIComponent(escape(atob(String(text).trim())))); if (!o.items) throw 0; replaceState(o); go('home'); toast('Progress loaded.'); }
   catch (err) { toast('That code didn\'t work — copy the whole code and try again.'); }
 }
-function replaceState(o) { S = o; S.settings = Object.assign(blank().settings, S.settings || {}); S.v = Math.max(S.v || 1, 2); try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { } if (!VIEW || !VIEW.cur) render(); }
+function replaceState(o) { S = migrate(o); S.settings = Object.assign(blank().settings, S.settings || {}); try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { } if (!VIEW || !VIEW.cur) render(); }
 
 // what went wrong, per line: the last few wrong attempts (typed or heard)
 function recordMiss(q, v) {
@@ -1036,7 +1041,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Enter' && VIEW && VIE
 
 // ───────── offline
 if ('serviceWorker' in navigator && /^https?:/.test(location.protocol) && !IN_CLAUDE) {
-  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v3').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
+  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v4').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
 }
 window.__SM = { spoken: heard => VIEW && VIEW.cur && spokenResult(VIEW, VIEW.cur, heard), replaceState, rerender: () => { if (!VIEW || !VIEW.cur) render(); }, view: () => VIEW, realId, kindOf, S: () => S, PATH, mark, CORE_ITEMS, grade, STEP, textOf };
 render();
