@@ -10,4 +10,8 @@ Live (offline PWA): https://samdonny.github.io/serve-mass/ — repo samdonny/ser
 - Marking is forgiving by design (Sam: the goal is saying it, not spelling it).
 - Points where practice varies are tagged `father:` and collected into the "Ask Father" list. Don't present a varying custom as fixed.
 - Extras (sacristy/candles, Leonine prayers) are optional and must not affect main progress.
-- Test: serve the folder (`python3 -m http.server`), open it, and drive stops; `window.__SM` exposes state for scripted runs.
+- **Two versions from one codebase (v3, 20 Nov 2026):** the GitHub Pages PWA (offline, iPhone home screen) and a private **Claude version** at https://claude.ai/artifact/H4ujXAVBpNggMtS15YCVF3 built by `node scripts/build-artifact.mjs` → `artifact/index.html` (gitignored) and published with the Artifact tool (capabilities `sample`, `dictation`, `db` with rule `progress` read/write owner). After code changes: rebuild and republish the artifact as well as pushing.
+- `ai.js` holds every Claude feature (spoken-answer judge, Claude-marked "what do I do?" answers, memory hooks, Ask Claude, progress sync to db doc `progress/main`); it is inert without `window.claude`. Sam's progress in the Claude version can be read with ArtifactData (`progress/main`, field `state` = JSON string) to see his weak lines.
+- Inside Claude: `alert`/`confirm` do nothing (use `toast`), the browser mic is blocked (Mac uses `dictation`; iPhone uses keyboard dictation — typed answers that sound right pass via `mark(..., spoken=true)`), no service worker.
+- iOS keeps the home-screen app's storage separate from Safari's; progress moves via More → Copy / Paste.
+- Test: serve the folder (`python3 -m http.server`), open it, inject `tests/drive.js`, then `await runPath(0.05)`; `window.__SM` exposes state.

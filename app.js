@@ -69,7 +69,7 @@ const KEY = 'servemass-v1';
 let S;
 function blank() { return { v: 2, items: {}, stops: {}, lastActive: 0, prevActive: 0, studyMs: 0, days: {}, settings: { offset: 0, theme: '' } }; }
 function load() { try { S = JSON.parse(localStorage.getItem(KEY)) || blank(); } catch (e) { S = blank(); } S.settings = Object.assign(blank().settings, S.settings || {}); }
-function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { } }
+function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { } if (window.AI && AI.onSave) AI.onSave(); }
 const now = () => Date.now() + (S.settings.offset || 0);
 load();
 if (S.settings.theme) document.documentElement.dataset.theme = S.settings.theme;
@@ -127,20 +127,35 @@ function words(s) { return String(s || '').split(/\s+/).filter(w => norm(w)); }
 function lev(a, b) { const m = a.length, n = b.length; if (!m) return n; if (!n) return m; let p = Array.from({ length: n + 1 }, (_, j) => j); for (let i = 1; i <= m; i++) { const c = [i]; for (let j = 1; j <= n; j++) c[j] = Math.min(p[j] + 1, c[j - 1] + 1, p[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); p = c; } return p[n]; }
 const tol = n => n <= 2 ? 0 : n <= 7 ? 1 : 2;
 function wmatch(e, g) { if (e === g) return 2; return lev(e, g) <= tol(e.length) ? 1 : 0; }
+// Sound-alike spelling, so a speech recogniser's Italian spelling of Latin still lines up:
+// "chi letifica" ≈ "qui laetificat", "spirito" ≈ "spiritu", "ecclesie" ≈ "Ecclesiae".
+function phon(w) {
+  return norm(w).replace(/ae|oe/g, 'e').replace(/ph/g, 'f').replace(/ch/g, 'k').replace(/qu|cu(?=[aeio])/g, 'k')
+    .replace(/sc(?=[ei])/g, 'S').replace(/c(?=[eiy])/g, 'C').replace(/c/g, 'k').replace(/gn/g, 'N').replace(/g(?=[ei])/g, 'J')
+    .replace(/t(?=i[aeiou])/g, 'Z').replace(/z/g, 'Z').replace(/x/g, 'ks').replace(/y/g, 'i').replace(/h/g, '')
+    .replace(/(.)\1+/g, '$1').replace(/u(?=$)/, 'o').replace(/m$/, '');
+}
+const tolS = n => n <= 2 ? 0 : n <= 4 ? 1 : n <= 7 ? 2 : 3;
+function wmatchS(e, g) { if (e === g) return 2; return lev(e, g) <= tolS(e.length) ? 1 : 0; }
 // Align expected words with what was given; returns per-expected-word status and a verdict.
-function mark(expected, given) {
-  const E = words(expected), en = E.map(norm), gn = words(given).map(norm);
+// spoken: compare sound-alike forms, forgive recogniser noise and extra words.
+function mark(expected, given, spoken) {
+  const f = spoken ? phon : norm, eq = spoken ? wmatchS : wmatch;
+  const E = words(expected), en = E.map(f), gn = (spoken ? splitRun(given) : words(given)).map(f).filter(Boolean);
   const m = en.length, n = gn.length, D = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = m - 1; i >= 0; i--) for (let j = n - 1; j >= 0; j--) { const q = wmatch(en[i], gn[j]); D[i][j] = Math.max(D[i + 1][j], D[i][j + 1], q ? D[i + 1][j + 1] + q : 0); }
+  for (let i = m - 1; i >= 0; i--) for (let j = n - 1; j >= 0; j--) { const q = eq(en[i], gn[j]); D[i][j] = Math.max(D[i + 1][j], D[i][j + 1], q ? D[i + 1][j + 1] + q : 0); }
   const st = new Array(m).fill('miss'); let i = 0, j = 0, matched = 0;
-  while (i < m && j < n) { const q = wmatch(en[i], gn[j]); if (q && D[i][j] === D[i + 1][j + 1] + q) { st[i] = q === 2 ? 'ok' : 'typo'; matched++; i++; j++; } else if (D[i + 1][j] >= D[i][j + 1]) i++; else j++; }
+  while (i < m && j < n) { const q = eq(en[i], gn[j]); if (q && D[i][j] === D[i + 1][j + 1] + q) { st[i] = q === 2 ? 'ok' : 'typo'; matched++; i++; j++; } else if (D[i + 1][j] >= D[i][j + 1]) i++; else j++; }
   const extra = n - matched, ratio = m ? matched / m : 0;
   let v = 'bad';
-  if (matched === m && extra <= 1) v = 'ok';
+  if (spoken) { if (matched === m || (m >= 5 && ratio >= 0.85)) v = 'ok'; else if (ratio >= 0.6) v = 'close'; }
+  else if (matched === m && extra <= 1) v = 'ok';
   else if (m >= 8 && ratio >= 0.9 && extra <= 2) v = 'ok';
   else if (ratio >= 0.7) v = 'close';
-  return { v, html: E.map((w, k) => `<span class="w-${st[k]}">${esc(w)}</span>`).join(' '), typos: st.filter(x => x === 'typo').length, missing: st.filter(x => x === 'miss').length };
+  return { v, ratio, html: E.map((w, k) => `<span class="w-${st[k]}">${esc(w)}</span>`).join(' '), typos: st.filter(x => x === 'typo').length, missing: st.filter(x => x === 'miss').length };
 }
+// Recognisers sometimes glue words ("etcum") or split them; give the aligner both chances.
+function splitRun(s) { return words(s); }
 
 // ───────── speech (device Italian voice ≈ Church Latin; offline on iOS/macOS)
 let VOICE = null;
@@ -262,11 +277,17 @@ function homeHTML() {
     <li>Revision comes in Mass order and is mostly Latin.</li></ul>
     <small class="mute">Your progress is kept. Practice stops were regrouped: ones where you'd already learned everything are ticked; the rest are open. To go over a finished section the new way, use Redo on the Path tab.</small>
     <button class="wide" data-act="dismissNew">Got it</button></div>` : '';
-  return `<h1>Serve the Low Mass</h1>${news}
+  const weak = weakList();
+  const ios = /iPhone|iPad/.test(navigator.userAgent), standalone = navigator.standalone || matchMedia('(display-mode: standalone)').matches;
+  const storage = ios && !standalone && /^https?:/.test(location.protocol) && !window.claude && !S.storageNoteSeen ? `<div class="note">You're in Safari. <b>Progress here is separate from the home-screen app</b> — use the home-screen icon (or move progress with More → Copy / Paste). <button class="ghost" data-act="dismissStorage">OK</button></div>` : '';
+  const ai = AIon() ? `<p class="mute" style="margin:4px 0"><small>✨ Claude is connected: spoken answers are double-checked, "what do I do?" answers are marked by Claude, memory hooks and 💬 Ask Claude are on. Progress is saved to your Claude account.</small></p>` : '';
+  return `<h1>Serve the Low Mass</h1>${storage}${ai}${news}
   <div class="card">${welcome}
     <button class="pri wide" data-act="continue">${d.length ? `Revise ${Math.min(d.length, 12)}${nx ? ' → then ' : ''}` : ''}${nx ? (d.length ? esc(nx.title) : 'Continue: ' + esc(nx.title)) : d.length ? '' : 'All stops done — come back later for revision'}</button>
     ${d.length ? `<button class="wide" data-act="review">Only revise (${d.length} due)</button>` : ''}
+    <div class="row"><button data-act="rehearse">🎭 Rehearse</button>${weak.length ? `<button data-act="drill">🎯 Drill weakest ${Math.min(8, weak.length)}</button>` : ''}</div>
   </div>
+  ${weak.length ? `<div class="card"><b>Weak spots</b> <small class="mute">(missed in the last few days)</small><ol style="margin:6px 0;padding-left:20px">${weak.slice(0, 5).map(id => `<li><span class="${kindOf(id) === 'do' ? '' : 'lat'}">${esc(weakLabel(id))}</span> <small class="mute">×${trouble(id)}</small>${myHook(id) ? `<br><small>💡 ${esc(myHook(id))}</small>` : AIon() && kindOf(id) !== 'do' ? `<br><button class="ghost" data-act="hook" data-id="${esc(id)}">✨ Memory hook</button>` : ''}</li>`).join('')}</ol></div>` : ''}
   <div class="stats">
     <div class="card stat"><span class="mute">Path</span><b>${done}/${PATH.length}</b><div class="bar"><i style="width:${100 * done / PATH.length}%"></i></div><small class="mute">stops done</small></div>
     <div class="card stat"><span class="mute">Memory</span><b>${mem}%</b><div class="bar gold"><i style="width:${mem}%"></i></div><small class="mute">how well it's holding (grows over days)</small></div>
@@ -278,7 +299,7 @@ function homeHTML() {
   <p class="mute"><small>Studied ${Math.round(S.studyMs / MIN)} min in total. ${offlineNote()}</small></p>`;
 }
 let SW_READY = false;
-function offlineNote() { if (location.protocol === 'file:') return 'Running from a file on this device — works offline.'; return SW_READY ? '✅ Ready for offline use.' : '⏳ Saving for offline use… (keep this open a moment while online)'; }
+function offlineNote() { if (IN_CLAUDE) return 'Claude version — needs internet. For the plane, use the home-screen app (move progress with More → Copy / Paste).'; if (location.protocol === 'file:') return 'Running from a file on this device — works offline.'; return SW_READY ? '✅ Ready for offline use.' : '⏳ Saving for offline use… (keep this open a moment while online)'; }
 
 function stopRow(s, path) {
   const dn = stopDone(s.id), un = unlocked(s, path), nx = nextStop(path) === s, sc = S.stops[s.id];
@@ -324,6 +345,8 @@ function moreHTML() {
   <div class="card"><h3>Appearance</h3><div class="row"><button data-theme="">Auto</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></div></div>
   <div class="card"><h3>Voice</h3><p class="mute">🔊 uses your device's Italian voice (${VOICE ? esc(VOICE.name) : 'none found yet'}) — close to Church Latin, works offline.</p><button data-say="Ad Deum qui laetificat juventutem meam.">Test voice</button></div>
   <div class="card"><h3>Move progress between devices</h3><p class="mute">Copy this code on one device and paste it on the other.</p>
+    <div class="row"><button data-act="copyprog">📋 Copy progress</button><button data-act="pasteprog">📥 Paste from clipboard</button></div>
+    <p class="mute"><small>Before the flight: in the Claude version tap Copy, then in the home-screen app tap Paste. Same the other way.</small></p>
     <button class="wide" data-act="export">Show my progress code</button><textarea id="io" placeholder="Paste a progress code here"></textarea><button class="wide" data-act="import">Load pasted code</button></div>
   <div class="card"><h3>Reset</h3><button class="wide" data-act="reset">Erase all progress</button></div>
   <details class="card"><summary>Testing tools</summary><p class="mute">Shift the clock to check spaced revision. Offset now: ${Math.round((S.settings.offset || 0) / HOUR)} h.</p>
@@ -341,7 +364,7 @@ function startLearn(stop) {
       let body;
       if (p < sec.explain.length) {
         const c = sec.explain[p];
-        body = `<div class="card"><h2>${esc(c.title)}</h2>${c.map ? mapSVG(c.map) : ''}${c.pic ? `<div class="pic">${PICS[c.pic]}</div>` : ''}<div>${c.body}</div>${c.father ? `<p class="note">❓ Ask Father: ${esc(c.father)}</p>` : ''}</div>`;
+        body = `<div class="card"><h2>${esc(c.title)}</h2>${c.map ? mapSVG(c.map) : ''}${c.pic ? `<div class="pic">${PICS[c.pic]}</div>` : ''}<div>${c.body}</div>${c.father ? `<p class="note">❓ Ask Father: ${esc(c.father)}</p>` : ''}${AIon() ? `<button class="ghost" data-act="ask" data-ctx="card:${sec.id}:${p}">💬 Ask Claude about this</button>` : ''}</div>`;
       } else {
         body = `<div class="card"><h2>Read it through</h2><p class="mute">Read every line <b>aloud</b>, twice. Tap 🔊 to hear it. No questions yet — practice comes next.</p>` +
           sec.steps.map(st => st.type === 'do' ? `<div style="margin:8px 0">▸ <b>${esc(st.label)}</b><br><small class="mute">${esc(st.when)} → ${esc(st.a)}</small></div>`
@@ -414,7 +437,7 @@ function myOrderQ(sec) {
 }
 function reviewType(id) {
   const r = rec(id), k = kindOf(id);
-  if (k === 'do') return STEP[realId(id)].zone && Math.random() < 0.5 ? 'map' : 'mc';
+  if (k === 'do') return AIon() && r.st >= 2 && Math.random() < 0.5 ? 'explain' : STEP[realId(id)].zone && Math.random() < 0.5 ? 'map' : 'mc';
   if (r.st <= 1 && words(textOf(id)).length >= 6) return 'initials';
   return 'full';
 }
@@ -478,12 +501,24 @@ function qBody(q) {
       return `<p><b>Fill the missing words.</b></p><div class="lat" style="font-size:1.08rem;line-height:2.2">${q.bl.W.map((w, i) => q.bl.pick.has(i) ? `<input class="blank" type="text" data-bi="${i}" autocomplete="off" autocapitalize="off" spellcheck="false" size="${Math.max(3, norm(w).length + 1)}">` : esc(w)).join(' ')}</div>
         <button class="pri wide" data-act="check">Check</button>`;
     }
+    case 'doself': return `<p><b>What do you do now?</b> <small class="mute">Do it in your head (or for real), then check.</small></p><button class="pri wide" data-act="doreveal">Show me</button>`;
+    case 'explain': return `<p><b>In your own words: what do you do, step by step?</b> <small class="mute">Claude marks it — wording doesn't matter, the actions and their order do.</small></p>
+        <textarea id="ta" placeholder="e.g. I rise, go up the Epistle side…">${esc(q.draft || '')}</textarea>
+        <button class="pri wide" data-act="explaincheck">Check with Claude</button>${Mic.ok() ? '<button class="wide" data-act="mic">🎤 Say it instead</button>' : ''}<button class="wide" data-act="doreveal">Just show me the answer</button>`;
     case 'initials': case 'full': case 'next': {
+      if (q.rehearse) {
+        const f = fatherLatin(STEP[q.step]);
+        return `${f && VIEW && VIEW.audio ? '<button class="ghost" data-act="replay">🔊 Father again</button>' : ''}
+          <p><b>Your answer — out loud.</b></p>${Mic.ok() ? '<button class="pri wide" data-act="mic">🎤 Answer aloud — I\'ll listen</button>' : ''}
+          <button class="${Mic.ok() ? '' : 'pri '}wide" data-act="reveal">🗣 I've said it — show me</button>
+          <details style="margin-top:8px"><summary class="mute">Type it instead</summary><textarea id="ta" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea><button class="wide" data-act="check">Check</button></details>`;
+      }
       const hint = q.qt === 'initials' ? `<p class="lat mute" style="letter-spacing:.04em">${esc(initialsOf(textOf(id)))}</p>` : '';
       return `<p><b>${q.qt === 'initials' ? 'Write it out — first letters given.' : q.qt === 'next' ? 'Write it out.' : 'Write it out in full.'}</b> <small class="mute">Spelling is forgiven; the words and their order matter.</small></p>${hint}
         <textarea id="ta" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Type the Latin…"></textarea>
         <button class="pri wide" data-act="check">Check</button>
-        <button class="wide" data-act="aloud">🗣 I'll say it aloud instead → reveal</button>`;
+        ${Mic.ok() ? '<button class="wide" data-act="mic">🎤 Say it — I\'ll listen and mark it</button>' : micTip()}
+        <button class="wide" data-act="aloud">🗣 Say it aloud, mark it myself</button>`;
     }
     case 'order': {
       q.built = q.built || [];
@@ -511,7 +546,7 @@ function orderQ(stepIds, title) {
 function Session(o) {
   const ss = Object.assign({ queue: [], phases: [], cur: null, n: 0, ok: 0, first: 0, firstOk: 0, fb: null, startT: now(), log: [] }, o);
   ss.nextQ = function () {
-    ss.fb = null;
+    ss.fb = null; Mic.stop();
     while (!ss.queue.length && ss.phases.length) ss.queue = ss.phases.shift()();
     ss.cur = ss.queue.shift() || null;
     if (!ss.cur) return ss.finish();
@@ -520,6 +555,7 @@ function Session(o) {
     if (ss.cur.qt === 'order') { const sh = shuffle(ss.cur.items.map((x, i) => i)); ss.cur.shuf = sh; }
     render(); window.scrollTo(0, 0);
     const ta = $('#ta') || $('input.blank'); if (ta && matchMedia('(pointer:fine)').matches) ta.focus();
+    if (ss.cur.rehearse && ss.audio && ss.cur.qt !== 'doself') { const f = fatherLatin(STEP[ss.cur.step]); if (f) setTimeout(() => speak(f), 200); }
   };
   ss.render = function () {
     const q = ss.cur; if (!q) return '';
@@ -529,7 +565,8 @@ function Session(o) {
     let fb = '';
     if (ss.fb) {
       const f = ss.fb, cls = f.v;
-      const head = f.v === 'ok' ? (f.typos ? '✓ Right (small slips — see the underlined words)' : '✓ Right') : f.v === 'close' ? '≈ Nearly — look at the red words' : '✗ Not quite';
+      const words_ = !!f.html && /w-miss|w-typo/.test(f.html);
+      const head = f.v === 'ok' ? (f.typos ? '✓ Right (small slips — see the underlined words)' : '✓ Right') : f.v === 'close' ? (words_ ? '≈ Nearly — look at the red words' : '≈ Nearly') : '✗ Not quite';
       fb = `<div class="fb ${cls}"><b>${head}</b>${f.html ? `<div class="lat" style="margin-top:6px">${f.html}</div>` : ''}${f.extra || ''}</div><button class="pri wide" data-act="cont">Continue →</button>`;
     }
     return top + `<div class="card">${qHeader(q)}${ss.fb && !['map', 'mc', 'fatherMC'].includes(q.qt) ? '' : qBody(q)}${fb}</div>`;
@@ -539,11 +576,11 @@ function Session(o) {
     const q = ss.cur; q.answered = true;
     ss.n++; if (v === 'ok') ss.ok++;
     if (q.firstTry !== false) { ss.first++; if (v === 'ok') ss.firstOk++; }
-    tick();
+    tick(); recordMiss(q, v);
     const id = q.id;
     let more = '';
-    if (id && kindOf(id) === 'do') { const s = STEP[realId(id)]; more = `<p style="margin:6px 0 0">${v === 'ok' ? '' : `Answer: <b>${esc(s.a)}</b><br>`}<small class="mute">${esc(s.when)}</small></p>${s.pic && v !== 'ok' ? `<div class="pic">${PICS[s.pic]}</div>` : ''}${s.father ? `<p class="note">❓ Varies — ask Father: ${esc(s.father)}</p>` : ''}`; }
-    else if (id && q.qt !== 'order') { const t = textOf(id); const st = STEP[realId(id)] || {}; more = `<p style="margin:6px 0 0">${v !== 'ok' && !html ? `<span class="ans">${esc(t)}</span> ` : ''}${spk(t)} <small class="mute">${esc(st.en || (WHOLE[realId(id)] ? '' : ''))}</small>${st.say && v !== 'ok' ? `<br><small class="mute">say: ${esc(st.say)}</small>` : ''}${st.hook && v !== 'ok' ? `<br><small>💡 ${esc(st.hook)}</small>` : ''}</p>`; }
+    if (id && kindOf(id) === 'do') { const s = STEP[realId(id)]; more = `<p style="margin:6px 0 0">${v === 'ok' ? '' : `Answer: <b>${esc(s.a)}</b><br>`}<small class="mute">${esc(s.when)}</small></p>${s.pic && v !== 'ok' ? `<div class="pic">${PICS[s.pic]}</div>` : ''}${s.father ? `<p class="note">❓ Varies — ask Father: ${esc(s.father)}</p>` : ''}${aiBtns(id, v)}`; }
+    else if (id && q.qt !== 'order') { const t = textOf(id); const st = STEP[realId(id)] || {}; more = `<p style="margin:6px 0 0">${v !== 'ok' && !html ? `<span class="ans">${esc(t)}</span> ` : ''}${spk(t)} <small class="mute">${esc(st.en || (WHOLE[realId(id)] ? '' : ''))}</small>${st.say && v !== 'ok' ? `<br><small class="mute">say: ${esc(st.say)}</small>` : ''}${st.hook && v !== 'ok' ? `<br><small>💡 ${esc(st.hook)}</small>` : ''}${myHook(id) && v !== 'ok' ? `<br><small>💡 <b>Your hook:</b> ${esc(myHook(id))}</small>` : ''}</p>${aiBtns(id, v)}`; }
     ss.fb = { v, html, extra: (extra || '') + more, typos };
     ss.onAnswer(q, v);
     save(); render();
@@ -616,7 +653,7 @@ function startCheck(stop) {
   const ss = Session({ title: stop.title, stop });
   const orders = sec.noOrder ? [] : windows(stepIds, 7).map((w, i, a) => Object.assign(orderQ(w, a.length > 1 ? `Order part ${i + 1} of ${a.length} of this section.` : 'Put the whole section in order.'), { tag: 'sequence' }));
   // Latin in Mass order (with where-you-are shown); movements asked once each, map where there is one
-  const recall = items.map(id => qFor(id, kindOf(id) === 'do' ? (STEP[id].zone ? 'map' : 'mc') : 'full'));
+  const recall = items.map((id, k) => qFor(id, kindOf(id) === 'do' ? (AIon() && k % 2 ? 'explain' : STEP[id].zone ? 'map' : 'mc') : 'full'));
   const mine = sayStepsOf(sec).filter(st => !st.alias && prevMine(st.id));
   const nexts = shuffle(mine).slice(0, 3).map(st => nextQ(st.id, false));
   const fathers = shuffle(sec.steps.filter(st => fatherLatin(st) && words(fatherLatin(st)).length >= 3)).slice(0, 2).map(st => fatherClozeQ(st.id));
@@ -628,7 +665,7 @@ function startCheck(stop) {
     if (!q.id || q.qt === 'next') { if (v !== 'ok' && !q.retried && q.qt === 'next') ss.queue.push(Object.assign({}, q, { retried: true, firstTry: false, hint: true })); return; }
     if (q.firstTry !== false) { if (isWhole(q.id) && v === 'ok') markLearned(q.id); else grade(q.id, v); }
     if (v !== 'ok' && !q.retried) {
-      const easier = kindOf(q.id) === 'do' ? 'mc' : isWhole(q.id) ? 'initials' : (words(textOf(q.id)).length >= 4 ? 'cloze2' : 'full');
+      const easier = kindOf(q.id) === 'do' ? (q.qt === 'explain' ? 'mc' : 'mc') : isWhole(q.id) ? 'initials' : (words(textOf(q.id)).length >= 4 ? 'cloze2' : 'full');
       insertAt(ss.queue, 2, Object.assign({}, q, { qt: easier, retried: true, firstTry: false, tag: 'again, easier' }));
       ss.queue.push(Object.assign({}, q, { retried: true, firstTry: false, tag: 'once more' }));
     }
@@ -686,7 +723,7 @@ function finishView(msg, stop, ss, then) {
   const d = due(path === XPATH ? EXTRA_ITEMS : CORE_ITEMS);
   VIEW = {
     render() {
-      return `<h1>${stop ? esc(stop.title) : 'Revision'}</h1><div class="card"><p>${esc(msg)}</p>${ss ? `<p class="mute">${ss.n} answers, ${ss.ok} right.</p>` : ''}
+      return `<h1>${stop ? esc(stop.title) : esc((ss && ss.title) || 'Revision')}</h1><div class="card"><p>${esc(msg)}</p>${ss ? `<p class="mute">${ss.n} answers, ${ss.ok} right.</p>` : ''}${ss && ss.summaryHTML ? ss.summaryHTML : ''}
         <p class="mute"><small>Memory now ${memPct(CORE_ITEMS)}%. Things you learned come back for revision in about 10 minutes, then 1 h, 5 h, a day, 2 days…</small></p></div>
         ${then ? `<button class="pri wide" data-act="then">Continue: ${esc(then.title)}</button>` : nx ? `<button class="pri wide" data-act="next">${d.length >= 6 ? `Revise ${Math.min(12, d.length)} first, then: ` : 'Next: '}${esc(nx.title)}</button>` : ''}
         ${d.length ? `<button class="wide" data-act="more">Revise more (${d.length} due)</button>` : ''}
@@ -708,6 +745,191 @@ function openStop(stop) {
   if (stop.kind === 'run') return startRun(stop);
 }
 
+// ───────── v3: mistakes, weak spots, speaking, rehearsal, Claude glue
+function toast(msg) { let t = $('#toast'); if (!t) { t = document.createElement('div'); t.id = 'toast'; t.setAttribute('role', 'status'); document.body.appendChild(t); } t.textContent = msg; t.hidden = false; clearTimeout(toast.h); toast.h = setTimeout(() => { t.hidden = true; }, 4500); }
+const IN_CLAUDE = !!(window.claude && typeof window.claude.use === 'function');
+const AIon = () => !!(window.AI && AI.on && AI.on.sample);
+const ordOf = id => ORDER[id] != null ? ORDER[id] : WHOLE[id] ? ORDER[WHOLE[id].of[0]] : 0;
+function exportCode() { return btoa(unescape(encodeURIComponent(JSON.stringify(S)))); }
+function importCode(text) {
+  try { const o = JSON.parse(decodeURIComponent(escape(atob(String(text).trim())))); if (!o.items) throw 0; replaceState(o); go('home'); toast('Progress loaded.'); }
+  catch (err) { toast('That code didn\'t work — copy the whole code and try again.'); }
+}
+function replaceState(o) { S = o; S.settings = Object.assign(blank().settings, S.settings || {}); S.v = Math.max(S.v || 1, 2); try { localStorage.setItem(KEY, JSON.stringify(S)); } catch (e) { } if (!VIEW || !VIEW.cur) render(); }
+
+// what went wrong, per line: the last few wrong attempts (typed or heard)
+function recordMiss(q, v) {
+  if (!q.id || v === 'ok' || q.qt === 'intro' || q.qt === 'order') return;
+  const r = rec(q.id);
+  r.miss = (r.miss || []).concat([{ t: now(), g: String(q.given || '').slice(0, 300), qt: q.qt }]).slice(-6);
+}
+function trouble(id) {
+  const r = S.items[id]; if (!r || !r.miss) return 0;
+  const since = Math.max(r.cleared || 0, now() - 4 * DAY);
+  return r.miss.filter(m => m.t > since).length;
+}
+function weakList() { return CORE_ITEMS.filter(id => trouble(id) >= 1).sort((a, b) => trouble(b) - trouble(a) || ordOf(a) - ordOf(b)); }
+function weakLabel(id) { return kindOf(id) === 'do' ? '▸ ' + STEP[id].label : isWhole(id) ? WHOLE[id].title : textOf(id); }
+const myHook = id => (S.items[realId(id)] || {}).myHook || '';
+
+function startDrill(ids, title) {
+  ids = [...new Set(ids)].slice(0, 8).sort((a, b) => ordOf(a) - ordOf(b));
+  if (!ids.length) return;
+  const ss = Session({ title });
+  ss.queue = ids.map(id => {
+    const k = kindOf(id), n = k === 'do' ? 0 : words(textOf(id)).length;
+    const lad = k === 'do' ? (STEP[id].zone ? ['mc', 'map'] : ['mc']) : k === 'whole' ? ['initials', 'full'] : n <= 2 ? ['full', 'full'] : n <= 4 ? ['cloze2', 'full', 'full'] : ['cloze2', 'initials', 'full', 'full'];
+    return { id, step: k === 'whole' ? id : id, lad, pos: 0, hint: hintOn(lad, 0), tag: 'drill' };
+  });
+  const total = ss.queue.reduce((a, q) => a + q.lad.length, 0); ss.prog = () => 100 * Math.min(ss.ok, total) / total;
+  // like a practice stop: each line back-to-back until it's solid, then the next
+  ss.onAnswer = (q, v) => {
+    if (v === 'ok' || (v === 'close' && (q.closes = (q.closes || 0) + 1) >= 2)) { q.closes = 0; q.pos++; }
+    else if (v === 'bad') { q.pos = Math.max(0, q.pos - 1); q.hadBad = true; }
+    if (q.pos < q.lad.length) { q.hint = hintOn(q.lad, q.pos); insertAt(ss.queue, 0, q); return; }
+    const r = rec(q.id); if (!r.learned) markLearned(q.id); else grade(q.id, q.hadBad ? 'close' : 'ok'); r.cleared = now();
+  };
+  ss.onFinish = () => finishView(`Drill done — ${ids.length} line${ids.length > 1 ? 's' : ''} worked until solid.`, null, ss);
+  VIEW = ss; ss.nextQ();
+}
+
+// ── speaking: the phone's speech recogniser (online), or Claude's dictation on the Mac
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+const Mic = {
+  cur: null, blocked: false, cancelled: false,
+  ok() { return !this.blocked && (!!(window.AI && AI.dict) || (!!SR && !IN_CLAUDE && navigator.onLine !== false)); },
+  stop() { const c = this.cur; if (c) try { c.stop(); } catch (e) { } },
+  cancel() { this.cancelled = true; this.stop(); this.cur = null; },
+  start(onText, onDone, onErr) {
+    this.cancelled = false;
+    const finish = t => { this.cur = null; if (!this.cancelled) onDone(t); };
+    if (window.AI && AI.dict) {
+      const d = AI.dict; let fin = '', started = false; const offs = [];
+      offs.push(d.onPartial(({ text }) => onText((fin + ' ' + text).trim())));
+      offs.push(d.onFinal(({ text }) => { fin = (fin + ' ' + text).trim(); onText(fin); }));
+      offs.push(d.onState(({ state, reason }) => { if (state !== 'idle') { started = true; return; } if (!started) return; offs.forEach(f => f()); if (reason && !/stopped|completed|viewer_stopped/.test(reason) && !fin) onErr(reason); else finish(fin); }));
+      d.start({ language: 'it' }).catch(e => { offs.forEach(f => f()); if (e && e.code === 'not_granted') this.blocked = true; if (!(e && e.code === 'stopped')) onErr(e && e.code || 'error'); });
+      this.cur = { stop: () => d.stop().catch(() => { }) };
+      return;
+    }
+    const r = new SR(); let last = '', err = null;
+    r.lang = 'it-IT'; r.interimResults = true; r.continuous = true; r.maxAlternatives = 1;
+    r.onresult = e => { let fin = '', mid = ''; for (const res of e.results) { if (res.isFinal) fin += res[0].transcript + ' '; else mid += res[0].transcript; } last = (fin + mid).trim(); onText(last); };
+    r.onerror = e => { err = e.error; if (err === 'not-allowed' || err === 'service-not-allowed') this.blocked = true; };
+    r.onend = () => { if (err && !last) { this.cur = null; if (!this.cancelled) onErr(err); } else finish(last); };
+    try { r.start(); this.cur = r; } catch (e) { onErr('start'); }
+  },
+};
+function micTip() { return /iPhone|iPad/.test(navigator.userAgent) || IN_CLAUDE ? '<p class="mute"><small>Tip: tap 🎤 on your keyboard to dictate into the box — answers that sound right count, even if the spelling is off.</small></p>' : ''; }
+const MIC_ERR = { 'not-allowed': 'Microphone permission was refused. You can allow it in Settings → Safari → Microphone, or keep typing.', 'service-not-allowed': 'Speech recognition isn\'t allowed here (on iPhone: Settings → General → Keyboard → Enable Dictation).', network: 'Speech recognition needs internet. Type or mark it yourself instead.', 'no-speech': 'I didn\'t hear anything — try again a bit closer.', 'audio-capture': 'No microphone found.', not_granted: 'Dictation wasn\'t allowed for this page.', unavailable: 'Dictation isn\'t available here.' };
+function listenFor(ss, q) {
+  const card = $('.card');
+  card.innerHTML = qHeader(q) + `<div class="listen"><p>🎙️ <b>Listening…</b> say it all, then tap Done.</p><div id="heard" class="lat mute">…</div>
+    <button class="pri wide" data-act="micdone">Done</button><button class="wide" data-act="miccancel">Cancel</button></div>`;
+  Mic.start(t => { const h = $('#heard'); if (h) h.textContent = t || '…'; },
+    heard => { if (q.qt === 'explain') { q.draft = ((q.draft || '') + ' ' + heard).trim(); return render(); } spokenResult(ss, q, heard); },
+    err => { render(); const c = $('.card'); if (c) c.insertAdjacentHTML('afterbegin', `<p class="note">${esc(MIC_ERR[err] || 'The microphone didn\'t work this time (' + err + '). Type it, or mark it yourself.')}</p>`); });
+}
+function spokenResult(ss, q, heard) {
+  if (!heard) { render(); $('.card').insertAdjacentHTML('afterbegin', `<p class="note">${esc(MIC_ERR['no-speech'])}</p>`); return; }
+  q.given = heard;
+  const exp = textOf(q.id), m = mark(exp, heard, true);
+  const heardHTML = `<p class="mute" style="margin:6px 0 0"><small>Heard: “${esc(heard)}”</small></p>`;
+  q.spokenHTML = m.html;
+  if (m.v === 'ok') return ss.answer('ok', m.html, heardHTML);
+  if (AIon() && m.ratio >= 0.35) {
+    $('.card').innerHTML = qHeader(q) + `<p>🎙️ Heard: <span class="lat">“${esc(heard)}”</span></p><p class="mute">✨ Checking with Claude…</p>`;
+    const st = STEP[realId(q.id)] || {};
+    return AI.judge(exp, heard, st.en || '').then(r => {
+      if (VIEW !== ss || ss.cur !== q || ss.fb) return;
+      if (r && r.verdict === 'ok') return ss.answer('ok', m.html, heardHTML + (r.note ? `<p><small>✨ ${esc(r.note)}</small></p>` : ''));
+      selfMarkSpoken(q, m, heard, r);
+    }, () => { if (VIEW === ss && ss.cur === q && !ss.fb) selfMarkSpoken(q, m, heard, null); });
+  }
+  selfMarkSpoken(q, m, heard, null);
+}
+function selfMarkSpoken(q, m, heard, r) {
+  const sug = r && r.verdict ? r.verdict : m.v;
+  const btn = (v, l) => `<button data-self="${v}"${sug === v ? ' class="pri"' : ''}>${l}</button>`;
+  $('.card').innerHTML = qHeader(q) + `<p style="margin:6px 0 2px">🎙️ The mic heard:</p><p class="lat" style="margin:0">“${esc(heard)}”</p>
+    <p style="margin:8px 0 2px">The line <small class="mute">(red = not heard)</small>:</p><div class="lat">${m.html} ${spk(textOf(q.id))}</div>
+    ${r && r.note ? `<p><small>✨ Claude: ${esc(r.note)}${r.missing && r.missing.length ? ' Missing: ' + esc(r.missing.join(', ')) : ''}</small></p>` : ''}
+    <p class="mute">Microphones often mishear Latin. How did you <b>actually</b> do?</p><div class="row">${btn('ok', '✓ I said it right')}${btn('close', '≈ Nearly')}${btn('bad', '✗ Missed it')}</div>`;
+}
+
+// ── Claude-marked "what do I do?"
+function gradeExplain(ss, q, text) {
+  $('.card').innerHTML = qHeader(q) + `<p class="lat">${esc(text)}</p><p class="mute">✨ Claude is reading your answer…</p>`;
+  AI.gradeExplain(q.id, text, ctxFor(q.id)).then(r => {
+    if (VIEW !== ss || ss.cur !== q || ss.fb) return;
+    const v = ['ok', 'close', 'bad'].includes(r && r.verdict) ? r.verdict : 'close';
+    ss.answer(v, '', `<p style="margin:6px 0 0">✨ ${esc(r.feedback || '')}</p>${r.missed && r.missed.length ? `<p style="margin:4px 0"><small>Missed: ${esc(r.missed.join('; '))}</small></p>` : ''}`);
+  }, () => { if (VIEW === ss && ss.cur === q && !ss.fb) { render(); $('.card').insertAdjacentHTML('afterbegin', '<p class="note">Claude couldn\'t mark that just now — tap "Just show me the answer" and mark it yourself.</p>'); } });
+}
+
+// ── context handed to Claude for "Ask Claude" and marking
+const strip = h => String(h || '').replace(/<[^>]+>/g, ' ').replace(/&[a-z]+;/g, ' ').replace(/\s+/g, ' ').trim();
+function ctxFor(key) {
+  key = String(key || '');
+  if (key.startsWith('card:')) { const [, sid, i] = key.split(':'); const sec = ALLSEC.find(x => x.id === sid), c = sec.explain[+i]; return `Section: ${sec.title}\nExplanation card "${c.title}": ${strip(c.body)}${c.father ? '\nVaries by priest: ' + c.father : ''}`; }
+  if (isWhole(key)) return `The server's prayer "${WHOLE[key].title}": ${textOf(key)}`;
+  const st = STEP[key]; if (!st) return '';
+  const sec = SEC_OF[key], i = sec.steps.indexOf(st), around = sec.steps.slice(Math.max(0, i - 2), i + 3).map(x => x.type === 'do' ? `- (action) ${x.label}: ${x.a}` : `- Father: ${x.cue} → Server: ${textOf(x.id)}`).join('\n');
+  const me = st.type === 'do' ? `Movement: when "${st.when}" — the server: ${st.a}.` : `Father says: ${st.cue} (${st.cueEn || ''})\nThe server answers: ${textOf(key)} (${st.en || ''})${st.gloss ? '\nWord by word: ' + st.gloss : ''}`;
+  const r = S.items[realId(key)] || {}, wrong = (r.miss || []).filter(m => m.g).slice(-3).map(m => `"${m.g}"`).join(', ');
+  return `Section: ${sec.title}\n${me}${st.father ? '\nVaries by priest: ' + st.father : ''}\nAround this point:\n${around}${wrong ? '\nThe learner\'s recent wrong attempts: ' + wrong : ''}`;
+}
+function makeHook(b, id) {
+  if (!AIon()) return;
+  b.disabled = true; b.textContent = '✨ Writing a memory hook…';
+  const st = STEP[realId(id)] || {}, r = rec(id);
+  AI.hook({ latin: textOf(id), english: st.en || '', say: st.say || '', cue: st.cue || '', wrong: (r.miss || []).filter(m => m.g).slice(-3).map(m => m.g) })
+    .then(h => { r.myHook = h; save(); b.outerHTML = `<p style="margin:6px 0"><small>💡 <b>Your hook:</b> ${esc(h)}</small></p>`; },
+      () => { b.disabled = false; b.textContent = '✨ Couldn\'t write one just now — try again'; });
+}
+function aiBtns(id, v) {
+  if (!AIon() || !id) return '';
+  const hook = v !== 'ok' && kindOf(id) !== 'do' && !myHook(id) ? `<button class="ghost" data-act="hook" data-id="${esc(realId(id))}">✨ Memory hook</button>` : '';
+  return `<div class="row" style="margin-top:6px"><button class="ghost" data-act="ask" data-ctx="${esc(realId(id))}">💬 Ask Claude</button>${hook}</div>`;
+}
+
+// ── serve-along rehearsal: the Mass in order, Father's lines spoken, you answer aloud
+const REH = [['entr', 'end', 'The whole Low Mass'], ['entr', 'offer', 'First half: entrance → Offertory'], ['pref', 'end', 'Second half: Preface → leaving']];
+function startRehearsePicker() {
+  VIEW = {
+    render() {
+      const audio = S.settings.rehAudio !== false;
+      const opt = (a, b, l) => `<button class="opt" data-act="reh:${a}:${b}">${esc(l)}</button>`;
+      return `<div class="topbar"><button class="ghost" data-act="exit">✕</button></div><h1>Rehearse (serve-along)</h1>
+        <div class="card"><p>The Mass in order, like the real thing: ${audio ? 'Father\'s lines are <b>spoken</b>' : 'Father\'s lines appear on screen'}; you answer <b>out loud</b>${Mic.ok() ? ' (the mic marks it)' : ' and mark yourself'}; for each movement, picture it, then check. Misses go into your revision and weak spots.</p>
+        <button class="wide" data-act="rehaudio">${audio ? '🔊 Audio on (tap for silent — e.g. on the plane)' : '🔇 Silent (tap for audio)'}</button></div>
+        <div class="card">${REH.map(r => opt(...r)).join('')}<h3>One section</h3>${CORE.filter(x => x.id !== 'orient').map(x => opt(x.id, x.id, x.title)).join('')}</div>`;
+    },
+    act(a) {
+      if (a === 'rehaudio') { S.settings.rehAudio = S.settings.rehAudio === false; save(); render(); return; }
+      if (a.startsWith('reh:')) { const [, f, t] = a.split(':'); startRehearse(f, t); }
+    },
+  };
+  render(); window.scrollTo(0, 0);
+}
+function startRehearse(from, to) {
+  const i0 = CORE.findIndex(s => s.id === from), i1 = CORE.findIndex(s => s.id === to);
+  const stepIds = [].concat(...CORE.slice(i0, i1 + 1).map(s => s.steps.map(x => x.id)));
+  const title = (REH.find(r => r[0] === from && r[1] === to) || [0, 0, CORE[i0].title])[2];
+  const ss = Session({ title: 'Rehearsal: ' + title, audio: S.settings.rehAudio !== false, rehearse: true });
+  ss.queue = stepIds.map((sid, k) => STEP[sid].type === 'do' ? { id: sid, step: sid, qt: 'doself', rehearse: true, tag: `${k + 1} of ${stepIds.length}` } : { id: realId(sid), step: sid, qt: 'full', rehearse: true, tag: `${k + 1} of ${stepIds.length}` });
+  const total = ss.queue.length, misses = []; ss.prog = () => 100 * ss.n / total;
+  ss.onAnswer = (q, v) => { grade(q.id, v); if (v !== 'ok') misses.push(q.step); };
+  ss.onFinish = pct => {
+    const mins = Math.max(1, Math.round((now() - ss.startT) / MIN));
+    ss.summaryHTML = `<p>Took about <b>${mins} min</b>.</p>` + (misses.length ? `<p><b>To work on (${misses.length}):</b></p><ol style="padding-left:20px">${misses.map(id => `<li>${esc(stepLabel(STEP[id]))}</li>`).join('')}</ol><button class="wide" data-act="drillmiss">🎯 Drill these now</button>` : '<p>🎉 Nothing missed.</p>');
+    ss.missIds = [...new Set(misses.map(realId))];
+    finishView(`Rehearsal finished: ${pct}% right first time.`, null, ss);
+    const fv = VIEW, act = fv.act; fv.act = a => a === 'drillmiss' ? startDrill(ss.missIds, 'Drill: what you missed in the rehearsal') : act(a);
+  };
+  VIEW = ss; ss.nextQ();
+}
+
 // ───────── events
 document.addEventListener('click', e => {
   const b = e.target.closest('button, [data-zone], [data-reveal]'); if (!b) return;
@@ -719,8 +941,11 @@ document.addEventListener('click', e => {
   if (d.shift !== undefined) { S.settings.offset = +d.shift ? (S.settings.offset || 0) + +d.shift : 0; save(); render(); return; }
   if (d.stop) { const st = STOP[d.stop]; return openStop(st); }
   if (d.zone && !VIEW && TAB === 'map') { MAPSEL = d.zone; render(); return; }
+  if (d.act === 'ask') { if (window.AI && AI.ask) AI.ask(ctxFor(d.ctx)); return; }
+  if (d.act === 'hook') { makeHook(b, d.id); return; }
+  if (d.act === 'dismissStorage') { S.storageNoteSeen = true; save(); render(); return; }
   const V = VIEW;
-  if (d.act === 'exit') { if (!V || !V.queue || confirm('Leave this stop? Progress inside it is kept for items already learned.')) go(TAB); return; }
+  if (d.act === 'exit') { Mic.cancel(); go(TAB); return; }
   if (V && V.act && d.act) return V.act(d.act);
   if (V && V.cur) return sessionClick(V, b, d);
   switch (d.act) {
@@ -729,15 +954,25 @@ document.addEventListener('click', e => {
     case 'xreview': return startReview(due(EXTRA_ITEMS), 'Revision — extras', null);
     case 'cover': COVER = !COVER; render(); return;
     case 'dismissNew': S.whatsNew = false; save(); render(); return;
-    case 'export': $('#io').value = btoa(unescape(encodeURIComponent(JSON.stringify(S)))); $('#io').select(); return;
-    case 'import': try { const o = JSON.parse(decodeURIComponent(escape(atob($('#io').value.trim())))); if (!o.items) throw 0; S = o; save(); alert('Progress loaded.'); go('home'); } catch (err) { alert('That code didn\'t work.'); } return;
-    case 'reset': if (confirm('Erase all progress?')) { S = blank(); save(); go('home'); } return;
+    case 'export': $('#io').value = exportCode(); $('#io').select(); return;
+    case 'import': return importCode($('#io').value);
+    case 'copyprog': { const c = exportCode(); (navigator.clipboard ? navigator.clipboard.writeText(c) : Promise.reject()).then(() => toast('Progress copied. In the other app: More → Paste.'), () => { $('#io').value = c; $('#io').select(); toast('Couldn\'t copy automatically — the code is in the box below; copy it from there.'); }); return; }
+    case 'pasteprog': (navigator.clipboard && navigator.clipboard.readText ? navigator.clipboard.readText() : Promise.reject()).then(importCode, () => { $('#io').focus(); toast('Paste the code into the box below, then tap "Load pasted code".'); }); return;
+    case 'rehearse': return startRehearsePicker();
+    case 'drill': return startDrill(weakList(), 'Drill: your weakest lines');
+    case 'reset': if (b.dataset.armed) { S = blank(); save(); go('home'); toast('Progress erased.'); } else { b.dataset.armed = '1'; b.textContent = 'Tap again to erase everything'; } return;
   }
 });
 function sessionClick(ss, b, d) {
   const q = ss.cur;
   if (d.act === 'cont') return ss.nextQ();
   if (ss.fb) return;
+  if (d.act === 'mic') return listenFor(ss, q);
+  if (d.act === 'micdone') { Mic.stop(); return; }
+  if (d.act === 'miccancel') { Mic.cancel(); render(); return; }
+  if (d.act === 'replay') { const f = fatherLatin(STEP[q.step]); if (f) speak(f); return; }
+  if (d.act === 'doreveal') { const st = STEP[realId(q.id)]; $('.card').innerHTML = qHeader(q) + `<p class="ans" style="font-weight:600">${esc(st.a)}</p>${st.pic ? `<div class="pic">${PICS[st.pic]}</div>` : ''}${st.father ? `<p class="note">❓ Varies — ask Father: ${esc(st.father)}</p>` : ''}<p class="mute">Did you know it?</p><div class="row"><button data-self="ok">✓ Yes</button><button data-self="close">≈ Roughly</button><button data-self="bad">✗ No</button></div>`; return; }
+  if (d.act === 'explaincheck') { const g = $('#ta').value.trim(); if (!g) return; q.given = g; q.draft = g; return gradeExplain(ss, q, g); }
   if (d.act === 'introok' && q.qt === 'intro') { tick(); ss.onAnswer(q, 'ok'); save(); return ss.nextQ(); }
   if (d.opt !== undefined && q.qt === 'fatherMC') {
     const ok = norm(q.fopts[+d.opt]) === norm(q.right); q.picked = +d.opt;
@@ -778,7 +1013,7 @@ function sessionClick(ss, b, d) {
     }
   }
   if (q.qt === 'initials' || q.qt === 'full' || q.qt === 'next') {
-    if (d.act === 'check') { const g = $('#ta').value; if (!g.trim()) return; const m = mark(textOf(q.id), g); return ss.answer(m.v, m.html, '', m.typos); }
+    if (d.act === 'check') { const g = $('#ta').value; if (!g.trim()) return; q.given = g; const m = mark(textOf(q.id), g); if (m.v !== 'ok') { const p = mark(textOf(q.id), g, true); if (p.v === 'ok') return ss.answer('ok', p.html, '<p class="mute" style="margin:4px 0"><small>Sounds right — spelling forgiven.</small></p>', 1); } return ss.answer(m.v, m.html, '', m.typos); }
     if (d.act === 'aloud') {
       ss.fb = { v: 'self', html: '' };
       $('.card').innerHTML = qHeader(q) + `<p class="mute">Say it aloud now — all of it — <b>then</b> reveal.</p><button class="pri wide" data-act="reveal">Reveal</button>`;
@@ -790,7 +1025,7 @@ function sessionClick(ss, b, d) {
     $('.card').innerHTML = qHeader(q) + `<div class="ans" style="margin:8px 0">${esc(t)} ${spk(t)}</div><p class="mute">How did you do — honestly?</p><div class="row"><button data-self="ok">✓ Got it all</button><button data-self="close">≈ Nearly</button><button data-self="bad">✗ Missed it</button></div>`;
     return;
   }
-  if (d.self) { ss.selfMode = false; return ss.answer(d.self, `<span class="ans">${esc(textOf(q.id))}</span>`); }
+  if (d.self) { ss.selfMode = false; return ss.answer(d.self, kindOf(q.id) === 'do' ? '' : (q.spokenHTML || `<span class="ans">${esc(textOf(q.id))}</span>`)); }
 }
 document.addEventListener('keydown', e => {
   if (!VIEW || !VIEW.cur) return;
@@ -800,9 +1035,9 @@ document.addEventListener('keydown', e => {
 document.addEventListener('keydown', e => { if (e.key === 'Enter' && VIEW && VIEW.fb && e.target.tagName === 'TEXTAREA') { e.preventDefault(); $('[data-act="cont"]').click(); } });
 
 // ───────── offline
-if ('serviceWorker' in navigator && /^https?:/.test(location.protocol)) {
-  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v2').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
+if ('serviceWorker' in navigator && /^https?:/.test(location.protocol) && !IN_CLAUDE) {
+  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v3').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
 }
-window.__SM = { view: () => VIEW, realId, kindOf, S: () => S, PATH, mark, CORE_ITEMS, grade, STEP, textOf };
+window.__SM = { spoken: heard => VIEW && VIEW.cur && spokenResult(VIEW, VIEW.cur, heard), replaceState, rerender: () => { if (!VIEW || !VIEW.cur) render(); }, view: () => VIEW, realId, kindOf, S: () => S, PATH, mark, CORE_ITEMS, grade, STEP, textOf };
 render();
 })();
