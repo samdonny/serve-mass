@@ -15,6 +15,7 @@ const page = `<title>Serve the Low Mass</title>
 <div class="wrap" id="app"><p>Loading…</p></div>
 <nav class="tab" id="tabs"></nav>
 ${js('content.js')}
+${js('audio/index.js')}
 ${js('app.js')}
 ${js('ai.js')}
 `;

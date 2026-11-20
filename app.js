@@ -108,7 +108,7 @@ function grade(id, res) {
   if (!r.learned) { if (res === 'ok') { r.learned = true; r.st = 1; r.due = t + INT[0] * jit(); } r.last = t; return; }
   const ivl = INT[r.st - 1] || INT[0];
   if (res === 'ok') {
-    if (t - r.last >= 0.5 * ivl || t >= r.due) { r.st = Math.min(r.st + 1, INT.length); r.due = t + INT[r.st - 1] * jit(); }
+    if (t - r.last >= 0.5 * ivl || t >= r.due) { r.st = Math.min(r.st + (kindOf(id) === 'do' ? 2 : 1), INT.length); r.due = t + INT[r.st - 1] * jit(); } // movements stick faster: space them out more
   } else if (res === 'close') { r.due = t + INT[Math.max(0, r.st - 2)] * jit(); }
   else { r.lapses++; r.st = Math.max(1, r.st - 2); r.due = t + 5 * MIN; }
   r.last = t;
@@ -164,15 +164,27 @@ function splitRun(s) { return words(s); }
 
 // ───────── speech (device Italian voice ≈ Church Latin; offline on iOS/macOS)
 let VOICE = null;
-function pickVoice() { if (!('speechSynthesis' in window)) return; const vs = speechSynthesis.getVoices(); VOICE = vs.find(v => /^it/i.test(v.lang) && /alice|federica|luca|paola/i.test(v.name)) || vs.find(v => /^it/i.test(v.lang)) || null; }
+function pickVoice() { if (!('speechSynthesis' in window)) return; const vs = speechSynthesis.getVoices(); VOICE = vs.find(v => /^it/i.test(v.lang) && /luca|eddy|reed|rocko|grandpa/i.test(v.name)) || vs.find(v => /^it/i.test(v.lang)) || null; }
 if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
-function speak(text) {
-  if (!('speechSynthesis' in window)) return;
-  speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(String(text).replace(/\(.*?\)/g, '').replace(/j/g, 'i').replace(/J/g, 'I').replace(/ae/g, 'e').replace(/æ/g, 'e'));
-  u.lang = 'it-IT'; if (VOICE) u.voice = VOICE; u.rate = 0.82; speechSynthesis.speak(u);
+// Recorded lines (audio/index.js): Father = Diego, your lines = Giuseppe, respelled for Church Latin.
+const PLAYER = typeof Audio !== 'undefined' ? new Audio() : null;
+let SEQ = 0;
+const audioKey = t => words(String(t || '').replace(/\([^)]*\)/g, ' ')).map(norm).join(' ');
+function audioFor(text, who) { const A = window.MASS_AUDIO; if (!A) return null; const k = audioKey(text); return (who && A[who] && A[who][k]) || (A.server && A.server[k]) || (A.father && A.father[k]) || null; }
+function stopAudio() { SEQ++; if (PLAYER) { try { PLAYER.pause(); } catch (e) { } } if ('speechSynthesis' in window) speechSynthesis.cancel(); }
+function playOne(text, who) {
+  return new Promise(res => {
+    const f = audioFor(text, who);
+    if (f && PLAYER) { PLAYER.onended = PLAYER.onerror = () => res(); PLAYER.src = 'audio/' + f; const p = PLAYER.play(); if (p && p.catch) p.catch(() => res()); return; }
+    if (!('speechSynthesis' in window)) return res();
+    const u = new SpeechSynthesisUtterance(String(text).replace(/\(.*?\)/g, '').replace(/j/g, 'i').replace(/J/g, 'I').replace(/ae/g, 'e').replace(/æ/g, 'e'));
+    u.lang = 'it-IT'; if (VOICE) u.voice = VOICE; u.rate = 0.82; u.pitch = 0.8; u.onend = u.onerror = () => res(); speechSynthesis.speak(u);
+  });
 }
-const spk = t => `<button class="sp" data-say="${esc(t)}" aria-label="Hear it">🔊</button>`;
+// Play lines one after another (Father, then you); a new call cancels the old sequence.
+async function playSeq(items) { stopAudio(); const my = SEQ; for (const it of items) { if (my !== SEQ) return; if (it && it.text) { await playOne(it.text, it.who); if (my !== SEQ) return; await new Promise(r => setTimeout(r, it.gap || 350)); } } }
+function speak(text, who) { playSeq([{ text, who }]); }
+const spk = (t, who) => `<button class="sp" data-say="${esc(t)}"${who ? ` data-who="${who}"` : ''} aria-label="Hear it">🔊</button>`;
 
 // ───────── visuals
 const ZG = { // zone geometry on the sanctuary plan
@@ -326,11 +338,11 @@ function cardHTML() {
   const line = st => {
     if (st.type === 'do') return `<div style="margin:6px 0">▸ <b>${esc(st.label)}</b> <small class="mute">— ${esc(st.a)}</small></div>`;
     const t = textOf(st.id);
-    return `<div style="margin:8px 0"><div class="cue">${esc(st.cue)}</div><div class="ans ${COVER ? 'cover' : ''}" data-reveal>${esc(t)} ${COVER ? '' : spk(t)}</div><small class="mute">${esc(st.en)}</small></div>`;
+    return `<div style="margin:8px 0"><div class="cue">${esc(st.cue)} ${fatherLatin(st) ? spk(fatherLatin(st), 'father') : ''}</div><div class="ans ${COVER ? 'cover' : ''}" data-reveal>${esc(t)} ${COVER ? '' : spk(t, 'server')}</div><small class="mute">${esc(st.en)}</small></div>`;
   };
   return `<h1>Server's card</h1><p class="mute">The whole Low Mass in order: Father's cue, your answer, and what you do. Turn on <b>cover</b> to test yourself — tap a hidden line to reveal it.</p>
   <button class="wide" data-act="cover">${COVER ? 'Show all answers' : 'Cover my answers (self-test)'}</button>` +
-    CORE.map(sec => `<div class="card"><h3>${esc(sec.title)}</h3>${sec.steps.map(line).join('')}</div>`).join('') +
+    CORE.map(sec => `<div class="card"><h3>${esc(sec.title)}</h3>${sec.steps.some(x => x.type === 'say') ? `<button class="ghost" data-listen="${sec.id}">▶ Listen through</button>` : ''}${sec.steps.map(line).join('')}</div>`).join('') +
     `<div class="card"><h3>Ask Father before Mass</h3>${fatherList()}</div>`;
 }
 function fatherList() {
@@ -348,7 +360,10 @@ function moreHTML() {
   return `<h1>More</h1>
   <div class="card"><h3>Ask Father before Mass</h3>${fatherList()}</div>
   <div class="card"><h3>Appearance</h3><div class="row"><button data-theme="">Auto</button><button data-theme="light">Light</button><button data-theme="dark">Dark</button></div></div>
-  <div class="card"><h3>Voice</h3><p class="mute">🔊 uses your device's Italian voice (${VOICE ? esc(VOICE.name) : 'none found yet'}) — close to Church Latin, works offline.</p><button data-say="Ad Deum qui laetificat juventutem meam.">Test voice</button></div>
+  <div class="card"><h3>Listening</h3><p class="mute">Father's lines are read by a recorded male voice; your lines by a second voice, so you can tell them apart. Both work offline.</p>
+    <button class="wide" data-tog="autoFather">${S.settings.autoFather === false ? '☐' : '☑'} Play Father's line automatically on every question</button>
+    <button class="wide" data-tog="autoEcho">${S.settings.autoEcho === false ? '☐' : '☑'} Play your correct line after each answer</button>
+    <div class="row"><button data-say="Introibo ad altare Dei." data-who="father">🔊 Father</button><button data-say="Ad Deum qui laetificat juventutem meam." data-who="server">🔊 You</button></div></div>
   <div class="card"><h3>Move progress between devices</h3><p class="mute">Copy this code on one device and paste it on the other.</p>
     <div class="row"><button data-act="copyprog">📋 Copy progress</button><button data-act="pasteprog">📥 Paste from clipboard</button></div>
     <p class="mute"><small>Before the flight: in the Claude version tap Copy, then in the home-screen app tap Paste. Same the other way.</small></p>
@@ -371,9 +386,9 @@ function startLearn(stop) {
         const c = sec.explain[p];
         body = `<div class="card"><h2>${esc(c.title)}</h2>${c.map ? mapSVG(c.map) : ''}${c.pic ? `<div class="pic">${PICS[c.pic]}</div>` : ''}<div>${c.body}</div>${c.father ? `<p class="note">❓ Ask Father: ${esc(c.father)}</p>` : ''}${AIon() ? `<button class="ghost" data-act="ask" data-ctx="card:${sec.id}:${p}">💬 Ask Claude about this</button>` : ''}</div>`;
       } else {
-        body = `<div class="card"><h2>Read it through</h2><p class="mute">Read every line <b>aloud</b>, twice. Tap 🔊 to hear it. No questions yet — practice comes next.</p>` +
+        body = `<div class="card"><h2>Read it through</h2><p class="mute">Read every line <b>aloud</b>, twice. Tap 🔊 to hear it. No questions yet — practice comes next.</p><button class="pri wide" data-listen="${sec.id}">▶ Listen through: Father, then you</button><button class="wide" data-act="stopaudio">■ Stop</button>` +
           sec.steps.map(st => st.type === 'do' ? `<div style="margin:8px 0">▸ <b>${esc(st.label)}</b><br><small class="mute">${esc(st.when)} → ${esc(st.a)}</small></div>`
-            : `<div style="margin:12px 0"><div class="cue">${esc(st.cue)} <small class="mute">${esc(st.cueEn)}</small></div><div class="ans">${esc(textOf(st.id))} ${spk(textOf(st.id))}</div><small>${esc(st.en)}</small>${st.say ? `<br><small class="mute">say: ${esc(st.say)}</small>` : ''}${st.gloss ? `<br><small class="mute">${esc(st.gloss)}</small>` : ''}${st.hook ? `<br><small>💡 ${esc(st.hook)}</small>` : ''}${st.note ? `<br><small>📝 ${esc(st.note)}</small>` : ''}</div>`).join('') + '</div>';
+            : `<div style="margin:12px 0"><div class="cue">${esc(st.cue)} ${fatherLatin(st) ? spk(fatherLatin(st), 'father') : ''} <small class="mute">${esc(st.cueEn)}</small></div><div class="ans">${esc(textOf(st.id))} ${spk(textOf(st.id), 'server')}</div><small>${esc(st.en)}</small>${st.say ? `<br><small class="mute">say: ${esc(st.say)}</small>` : ''}${st.gloss ? `<br><small class="mute">${esc(st.gloss)}</small>` : ''}${st.hook ? `<br><small>💡 ${esc(st.hook)}</small>` : ''}${st.note ? `<br><small>📝 ${esc(st.note)}</small>` : ''}</div>`).join('') + '</div>';
       }
       return top + body + `<div class="row">${p ? '<button data-act="prev">← Back</button>' : ''}<button class="pri" data-act="next">${p < pages - 1 ? 'Next →' : 'Done — I\'ve read it'}</button></div>`;
     },
@@ -560,7 +575,7 @@ function Session(o) {
     if (ss.cur.qt === 'order') { const sh = shuffle(ss.cur.items.map((x, i) => i)); ss.cur.shuf = sh; }
     render(); window.scrollTo(0, 0);
     const ta = $('#ta') || $('input.blank'); if (ta && matchMedia('(pointer:fine)').matches) ta.focus();
-    if (ss.cur.rehearse && ss.audio && ss.cur.qt !== 'doself') { const f = fatherLatin(STEP[ss.cur.step]); if (f) setTimeout(() => speak(f), 200); }
+    autoPlayQ(ss);
   };
   ss.render = function () {
     const q = ss.cur; if (!q) return '';
@@ -588,7 +603,7 @@ function Session(o) {
     else if (id && q.qt !== 'order') { const t = textOf(id); const st = STEP[realId(id)] || {}; more = `<p style="margin:6px 0 0">${v !== 'ok' && !html ? `<span class="ans">${esc(t)}</span> ` : ''}${spk(t)} <small class="mute">${esc(st.en || (WHOLE[realId(id)] ? '' : ''))}</small>${st.say && v !== 'ok' ? `<br><small class="mute">say: ${esc(st.say)}</small>` : ''}${st.hook && v !== 'ok' ? `<br><small>💡 ${esc(st.hook)}</small>` : ''}${myHook(id) && v !== 'ok' ? `<br><small>💡 <b>Your hook:</b> ${esc(myHook(id))}</small>` : ''}</p>${aiBtns(id, v)}`; }
     ss.fb = { v, html, extra: (extra || '') + more, typos };
     ss.onAnswer(q, v);
-    save(); render();
+    save(); render(); autoEcho(q);
   };
   ss.finish = function () {
     const pct = ss.first ? Math.round(100 * ss.firstOk / ss.first) : 100;
@@ -600,7 +615,8 @@ function Session(o) {
 function insertAt(arr, i, ...x) { arr.splice(Math.min(arr.length, i), 0, ...x); }
 function qFor(id, qt, step, extra) { return Object.assign({ id, qt, step: step || id }, extra || {}); }
 
-function chainQs(stepIds, level) { // run through steps in order
+function chainQs(stepIds, level) { // run through the Latin in order (movements are covered elsewhere)
+  stepIds = stepIds.filter(sid => STEP[sid].type !== 'do');
   return stepIds.map((sid, k) => {
     const st = STEP[sid];
     let qt;
@@ -619,12 +635,12 @@ function startPractice(stop) {
   let at = 0;
   const lineQ = sid => {
     const st = STEP[sid];
-    if (st.type === 'do') return { id: sid, step: sid, lad: ['mc'], pos: 0 };
+    if (st.type === 'do') return learned(sid) ? null : { id: sid, step: sid, lad: ['mc'], pos: 0 };
     if (st.alias) { const n = words(textOf(sid)).length; return { id: realId(sid), step: sid, lad: learned(sid) ? ['full'] : n >= 6 ? ['initials', 'full'] : ['mc', 'full'], pos: 0, alias: true }; }
     return { id: sid, step: sid, lad: ladderFor(sid), pos: 0 };
   };
   // one phase per step, strictly in order; a line is drilled back-to-back until it's solid
-  stepIds.forEach((sid, k) => ss.phases.push(() => { at = k; const q = lineQ(sid); q.tag = `step ${k + 1} of ${stepIds.length}`; q.hint = q.lad && hintOn(q.lad, 0); return [q]; }));
+  stepIds.forEach((sid, k) => ss.phases.push(() => { at = k; const q = lineQ(sid); if (!q) return []; q.tag = `step ${k + 1} of ${stepIds.length}`; q.hint = q.lad && hintOn(q.lad, 0); return [q]; }));
   ss.phases.push(() => { at = stepIds.length; return stepIds.length >= 3 && !sec.noOrder ? windows(stepIds, 8).map((w, i, a) => Object.assign(orderQ(w, a.length > 1 ? `Put this stretch in order (part ${i + 1}).` : 'Put this stretch in order.'), { tag: 'sequence' })) : []; });
   ss.phases.push(() => chainQs(stepIds, 'full').map(q => Object.assign(q, { tag: 'run this stretch · ' + q.tag })));
   ss.prog = () => 100 * at / (stepIds.length + 2);
@@ -656,9 +672,12 @@ function startCheck(stop) {
   const sec = ALLSEC.find(s => s.id === stop.sec);
   const stepIds = sec.steps.map(s => s.id), items = itemsOfSec(sec).filter(id => !isWhole(id)), wholes = (sec.wholes || []).map(w => w.id);
   const ss = Session({ title: stop.title, stop });
-  const orders = sec.noOrder ? [] : windows(stepIds, 7).map((w, i, a) => Object.assign(orderQ(w, a.length > 1 ? `Order part ${i + 1} of ${a.length} of this section.` : 'Put the whole section in order.'), { tag: 'sequence' }));
+  const orders = []; void windows(stepIds, 7).map((w, i, a) => Object.assign(orderQ(w, a.length > 1 ? `Order part ${i + 1} of ${a.length} of this section.` : 'Put the whole section in order.'), { tag: 'sequence' }));
   // Latin in Mass order (with where-you-are shown); movements asked once each, map where there is one
-  const recall = items.map((id, k) => qFor(id, kindOf(id) === 'do' ? (AIon() && k % 2 ? 'explain' : STEP[id].zone ? 'map' : 'mc') : 'full'));
+  // Latin: every line from memory. Movements: just the 3 shakiest (or all, in Orientation which has nothing else).
+  const acts = items.filter(id => kindOf(id) === 'do').sort((a, b) => trouble(b) - trouble(a) || (rec(a).st || 0) - (rec(b).st || 0));
+  const keepActs = new Set(sec.noOrder ? acts : acts.slice(0, 3));
+  const recall = items.filter(id => kindOf(id) !== 'do' || keepActs.has(id)).map((id, k) => qFor(id, kindOf(id) === 'do' ? (AIon() && k % 2 ? 'explain' : STEP[id].zone ? 'map' : 'mc') : 'full'));
   const mine = sayStepsOf(sec).filter(st => !st.alias && prevMine(st.id));
   const nexts = shuffle(mine).slice(0, 3).map(st => nextQ(st.id, false));
   const fathers = shuffle(sec.steps.filter(st => fatherLatin(st) && words(fatherLatin(st)).length >= 3)).slice(0, 2).map(st => fatherClozeQ(st.id));
@@ -697,7 +716,7 @@ function startReview(ids, title, then) {
   const t = now(), urg = id => { const r = rec(id); return (t - r.due) / INT[r.st - 1]; };
   const byUrg = ids.slice().sort((a, b) => urg(b) - urg(a));
   const lat = byUrg.filter(id => kindOf(id) !== 'do'), act = byUrg.filter(id => kindOf(id) === 'do');
-  const nA = Math.min(act.length, lat.length >= 9 ? 3 : 12 - lat.length); // movements ≤ a quarter when Latin is due
+  const nA = Math.min(act.length, lat.length ? 2 : 4); // at most 2 movement questions when Latin is due
   const pick = act.slice(0, nA).concat(lat.slice(0, 12 - nA));
   const ord = id => ORDER[id] != null ? ORDER[id] : ORDER[WHOLE[id] ? WHOLE[id].of[0] : id] || 0;
   pick.sort((a, b) => ord(a) - ord(b)); // in Mass order, so recall follows the flow
@@ -748,6 +767,28 @@ function openStop(stop) {
   if (stop.kind === 'practice') return startPractice(stop);
   if (stop.kind === 'check') return startCheck(stop);
   if (stop.kind === 'run') return startRun(stop);
+}
+
+// ───────── listening: hear Father, then hear yourself
+const SAYQ = ['intro', 'mc', 'tiles', 'cloze1', 'cloze2', 'initials', 'full'];
+function autoPlayQ(ss) {
+  const q = ss.cur; if (!q || !q.id || kindOf(q.id) === 'do' || !SAYQ.includes(q.qt)) return stopAudio();
+  if (ss.rehearse && !ss.audio) return stopAudio();
+  if (S.settings.autoFather === false && !ss.rehearse) return stopAudio();
+  const f = fatherLatin(STEP[q.step]), seq = [];
+  if (f) seq.push({ text: f, who: 'father', gap: 500 });
+  if (q.qt === 'intro') { seq.push({ text: textOf(q.id), who: 'server', gap: 900 }); seq.push({ text: textOf(q.id), who: 'server' }); }
+  if (seq.length) playSeq(seq); else stopAudio();
+}
+function autoEcho(q) {
+  if (S.settings.autoEcho === false || !q.id || kindOf(q.id) === 'do' || q.qt === 'order' || q.qt === 'explain' || q.qt === 'doself' || (VIEW && VIEW.rehearse && !VIEW.audio)) return;
+  playSeq([{ text: textOf(q.id), who: 'server' }]);
+}
+// Listen-through: Father's line, then yours, for a whole section (Learn page and Card tab).
+function listenSection(secId) {
+  const sec = ALLSEC.find(x => x.id === secId), seq = [];
+  sec.steps.forEach(st => { if (st.type !== 'say') return; const f = fatherLatin(st); if (f) seq.push({ text: f, who: 'father', gap: 300 }); seq.push({ text: textOf(st.id), who: 'server', gap: 700 }); });
+  playSeq(seq); toast('Playing ' + sec.short + ' — Father, then you. Say your lines along with it.');
 }
 
 // ───────── v3: mistakes, weak spots, speaking, rehearsal, Claude glue
@@ -907,7 +948,8 @@ function startRehearsePicker() {
       const opt = (a, b, l) => `<button class="opt" data-act="reh:${a}:${b}">${esc(l)}</button>`;
       return `<div class="topbar"><button class="ghost" data-act="exit">✕</button></div><h1>Rehearse (serve-along)</h1>
         <div class="card"><p>The Mass in order, like the real thing: ${audio ? 'Father\'s lines are <b>spoken</b>' : 'Father\'s lines appear on screen'}; you answer <b>out loud</b>${Mic.ok() ? ' (the mic marks it)' : ' and mark yourself'}; for each movement, picture it, then check. Misses go into your revision and weak spots.</p>
-        <button class="wide" data-act="rehaudio">${audio ? '🔊 Audio on (tap for silent — e.g. on the plane)' : '🔇 Silent (tap for audio)'}</button></div>
+        <button class="wide" data-act="rehaudio">${audio ? '🔊 Audio on (tap for silent — e.g. on the plane)' : '🔇 Silent (tap for audio)'}</button>
+        <button class="wide" data-tog="rehMoves">${S.settings.rehMoves ? '☑ Also quiz me on the movements' : '☐ Also quiz me on the movements (off: you just see them as you go)'}</button></div>
         <div class="card">${REH.map(r => opt(...r)).join('')}<h3>One section</h3>${CORE.filter(x => x.id !== 'orient').map(x => opt(x.id, x.id, x.title)).join('')}</div>`;
     },
     act(a) {
@@ -922,7 +964,8 @@ function startRehearse(from, to) {
   const stepIds = [].concat(...CORE.slice(i0, i1 + 1).map(s => s.steps.map(x => x.id)));
   const title = (REH.find(r => r[0] === from && r[1] === to) || [0, 0, CORE[i0].title])[2];
   const ss = Session({ title: 'Rehearsal: ' + title, audio: S.settings.rehAudio !== false, rehearse: true });
-  ss.queue = stepIds.map((sid, k) => STEP[sid].type === 'do' ? { id: sid, step: sid, qt: 'doself', rehearse: true, tag: `${k + 1} of ${stepIds.length}` } : { id: realId(sid), step: sid, qt: 'full', rehearse: true, tag: `${k + 1} of ${stepIds.length}` });
+  const steps2 = S.settings.rehMoves ? stepIds : stepIds.filter(sid => STEP[sid].type !== 'do');
+  ss.queue = steps2.map((sid, k) => STEP[sid].type === 'do' ? { id: sid, step: sid, qt: 'doself', rehearse: true, tag: `${k + 1} of ${steps2.length}` } : { id: realId(sid), step: sid, qt: 'full', rehearse: true, tag: `${k + 1} of ${steps2.length}` });
   const total = ss.queue.length, misses = []; ss.prog = () => 100 * ss.n / total;
   ss.onAnswer = (q, v) => { grade(q.id, v); if (v !== 'ok') misses.push(q.step); };
   ss.onFinish = pct => {
@@ -939,7 +982,10 @@ function startRehearse(from, to) {
 document.addEventListener('click', e => {
   const b = e.target.closest('button, [data-zone], [data-reveal]'); if (!b) return;
   const d = b.dataset;
-  if (d.say !== undefined) { speak(d.say); return; }
+  if (d.say !== undefined) { speak(d.say, d.who); return; }
+  if (d.listen) { listenSection(d.listen); return; }
+  if (d.act === 'stopaudio') { stopAudio(); return; }
+  if (d.tog) { S.settings[d.tog] = S.settings[d.tog] === false; save(); render(); return; }
   if (d.tab) return go(d.tab);
   if (d.reveal !== undefined && b.classList.contains('cover')) { b.classList.remove('cover'); return; }
   if (d.theme !== undefined && b.tagName === 'BUTTON') { S.settings.theme = d.theme; if (d.theme) document.documentElement.dataset.theme = d.theme; else delete document.documentElement.dataset.theme; save(); return; }
@@ -975,7 +1021,7 @@ function sessionClick(ss, b, d) {
   if (d.act === 'mic') return listenFor(ss, q);
   if (d.act === 'micdone') { Mic.stop(); return; }
   if (d.act === 'miccancel') { Mic.cancel(); render(); return; }
-  if (d.act === 'replay') { const f = fatherLatin(STEP[q.step]); if (f) speak(f); return; }
+  if (d.act === 'replay') { const f = fatherLatin(STEP[q.step]); if (f) speak(f, 'father'); return; }
   if (d.act === 'doreveal') { const st = STEP[realId(q.id)]; $('.card').innerHTML = qHeader(q) + `<p class="ans" style="font-weight:600">${esc(st.a)}</p>${st.pic ? `<div class="pic">${PICS[st.pic]}</div>` : ''}${st.father ? `<p class="note">❓ Varies — ask Father: ${esc(st.father)}</p>` : ''}<p class="mute">Did you know it?</p><div class="row"><button data-self="ok">✓ Yes</button><button data-self="close">≈ Roughly</button><button data-self="bad">✗ No</button></div>`; return; }
   if (d.act === 'explaincheck') { const g = $('#ta').value.trim(); if (!g) return; q.given = g; q.draft = g; return gradeExplain(ss, q, g); }
   if (d.act === 'introok' && q.qt === 'intro') { tick(); ss.onAnswer(q, 'ok'); save(); return ss.nextQ(); }
@@ -1041,8 +1087,8 @@ document.addEventListener('keydown', e => { if (e.key === 'Enter' && VIEW && VIE
 
 // ───────── offline
 if ('serviceWorker' in navigator && /^https?:/.test(location.protocol) && !IN_CLAUDE) {
-  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v4').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
+  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v5').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
 }
-window.__SM = { spoken: heard => VIEW && VIEW.cur && spokenResult(VIEW, VIEW.cur, heard), replaceState, rerender: () => { if (!VIEW || !VIEW.cur) render(); }, view: () => VIEW, realId, kindOf, S: () => S, PATH, mark, CORE_ITEMS, grade, STEP, textOf };
+window.__SM = { audioFor, fatherLatin, spoken: heard => VIEW && VIEW.cur && spokenResult(VIEW, VIEW.cur, heard), replaceState, rerender: () => { if (!VIEW || !VIEW.cur) render(); }, view: () => VIEW, realId, kindOf, S: () => S, PATH, mark, CORE_ITEMS, grade, STEP, textOf };
 render();
 })();
