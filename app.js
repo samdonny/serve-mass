@@ -170,7 +170,7 @@ if ('speechSynthesis' in window) { pickVoice(); speechSynthesis.onvoiceschanged 
 const PLAYER = typeof Audio !== 'undefined' ? new Audio() : null;
 let SEQ = 0;
 const audioKey = t => words(String(t || '').replace(/\([^)]*\)/g, ' ')).map(norm).join(' ');
-function audioFor(text, who) { const A = window.MASS_AUDIO; if (!A) return null; const k = audioKey(text); return (who && A[who] && A[who][k]) || (A.server && A.server[k]) || (A.father && A.father[k]) || null; }
+function audioFor(text, who) { const A = window.MASS_AUDIO; if (!A) return null; const k = audioKey(text); if (who === 'clear') return (A.clear && A.clear[k]) || null; return (who && A[who] && A[who][k]) || (A.server && A.server[k]) || (A.father && A.father[k]) || null; }
 function stopAudio() { SEQ++; if (PLAYER) { try { PLAYER.pause(); } catch (e) { } } if ('speechSynthesis' in window) speechSynthesis.cancel(); }
 function playOne(text, who) {
   return new Promise(res => {
@@ -184,6 +184,7 @@ function playOne(text, who) {
 // Play lines one after another (Father, then you); a new call cancels the old sequence.
 async function playSeq(items) { stopAudio(); const my = SEQ; for (const it of items) { if (my !== SEQ) return; if (it && it.text) { await playOne(it.text, it.who); if (my !== SEQ) return; await new Promise(r => setTimeout(r, it.gap || 350)); } } }
 function speak(text, who) { playSeq([{ text, who }]); }
+const slow = t => audioFor(t, 'clear') ? `<button class="sp" data-say="${esc(t)}" data-who="clear" aria-label="Hear it slowly, word by word" title="Slowly, word by word">🐢</button>` : '';
 const spk = (t, who) => `<button class="sp" data-say="${esc(t)}"${who ? ` data-who="${who}"` : ''} aria-label="Hear it">🔊</button>`;
 
 // ───────── visuals
@@ -338,7 +339,7 @@ function cardHTML() {
   const line = st => {
     if (st.type === 'do') return `<div style="margin:6px 0">▸ <b>${esc(st.label)}</b> <small class="mute">— ${esc(st.a)}</small></div>`;
     const t = textOf(st.id);
-    return `<div style="margin:8px 0"><div class="cue">${esc(st.cue)} ${fatherLatin(st) ? spk(fatherLatin(st), 'father') : ''}</div><div class="ans ${COVER ? 'cover' : ''}" data-reveal>${esc(t)} ${COVER ? '' : spk(t, 'server')}</div><small class="mute">${esc(st.en)}</small></div>`;
+    return `<div style="margin:8px 0"><div class="cue">${esc(st.cue)} ${fatherLatin(st) ? spk(fatherLatin(st), 'father') : ''}</div><div class="ans ${COVER ? 'cover' : ''}" data-reveal>${esc(t)} ${COVER ? '' : spk(t, 'server') + ' ' + slow(t)}</div><small class="mute">${esc(st.en)}</small></div>`;
   };
   return `<h1>Server's card</h1><p class="mute">The whole Low Mass in order: Father's cue, your answer, and what you do. Turn on <b>cover</b> to test yourself — tap a hidden line to reveal it.</p>
   <button class="wide" data-act="cover">${COVER ? 'Show all answers' : 'Cover my answers (self-test)'}</button>` +
@@ -388,7 +389,7 @@ function startLearn(stop) {
       } else {
         body = `<div class="card"><h2>Read it through</h2><p class="mute">Read every line <b>aloud</b>, twice. Tap 🔊 to hear it. No questions yet — practice comes next.</p><button class="pri wide" data-listen="${sec.id}">▶ Listen through: Father, then you</button><button class="wide" data-act="stopaudio">■ Stop</button>` +
           sec.steps.map(st => st.type === 'do' ? `<div style="margin:8px 0">▸ <b>${esc(st.label)}</b><br><small class="mute">${esc(st.when)} → ${esc(st.a)}</small></div>`
-            : `<div style="margin:12px 0"><div class="cue">${esc(st.cue)} ${fatherLatin(st) ? spk(fatherLatin(st), 'father') : ''} <small class="mute">${esc(st.cueEn)}</small></div><div class="ans">${esc(textOf(st.id))} ${spk(textOf(st.id), 'server')}</div><small>${esc(st.en)}</small>${st.say ? `<br><small class="mute">say: ${esc(st.say)}</small>` : ''}${st.gloss ? `<br><small class="mute">${esc(st.gloss)}</small>` : ''}${st.hook ? `<br><small>💡 ${esc(st.hook)}</small>` : ''}${st.note ? `<br><small>📝 ${esc(st.note)}</small>` : ''}</div>`).join('') + '</div>';
+            : `<div style="margin:12px 0"><div class="cue">${esc(st.cue)} ${fatherLatin(st) ? spk(fatherLatin(st), 'father') : ''} <small class="mute">${esc(st.cueEn)}</small></div><div class="ans">${esc(textOf(st.id))} ${spk(textOf(st.id), 'server')} ${slow(textOf(st.id))}</div><small>${esc(st.en)}</small>${st.say ? `<br><small class="mute">say: ${esc(st.say)}</small>` : ''}${st.gloss ? `<br><small class="mute">${esc(st.gloss)}</small>` : ''}${st.hook ? `<br><small>💡 ${esc(st.hook)}</small>` : ''}${st.note ? `<br><small>📝 ${esc(st.note)}</small>` : ''}</div>`).join('') + '</div>';
       }
       return top + body + `<div class="row">${p ? '<button data-act="prev">← Back</button>' : ''}<button class="pri" data-act="next">${p < pages - 1 ? 'Next →' : 'Done — I\'ve read it'}</button></div>`;
     },
@@ -494,7 +495,7 @@ function qBody(q) {
   switch (q.qt) {
     case 'intro': {
       const st = STEP[realId(id)], t = textOf(id);
-      return `<p class="mute" style="margin:6px 0 0">New line — your answer is:</p><div class="ans" style="font-size:1.3rem;margin:6px 0">${esc(t)} ${spk(t)}</div>
+      return `<p class="mute" style="margin:6px 0 0">New line — your answer is:</p><div class="ans" style="font-size:1.3rem;margin:6px 0">${esc(t)} ${spk(t, 'server')} ${slow(t)}</div>
         <p style="margin:4px 0"><b>${esc(st.en)}</b></p>${st.say ? `<p class="mute" style="margin:4px 0"><small>say: ${esc(st.say)}</small></p>` : ''}${st.gloss ? `<p class="mute" style="margin:4px 0"><small>${esc(st.gloss)}</small></p>` : ''}${st.hook ? `<p style="margin:4px 0"><small>💡 ${esc(st.hook)}</small></p>` : ''}${st.note ? `<p style="margin:4px 0"><small>📝 ${esc(st.note)}</small></p>` : ''}
         <p class="note">Say it aloud <b>twice</b>, looking at it. Then once more looking away.</p><button class="pri wide" data-act="introok">I've said it — test me</button>`;
     }
@@ -600,7 +601,7 @@ function Session(o) {
     const id = q.id;
     let more = '';
     if (id && kindOf(id) === 'do') { const s = STEP[realId(id)]; more = `<p style="margin:6px 0 0">${v === 'ok' ? '' : `Answer: <b>${esc(s.a)}</b><br>`}<small class="mute">${esc(s.when)}</small></p>${s.pic && v !== 'ok' ? `<div class="pic">${PICS[s.pic]}</div>` : ''}${s.father ? `<p class="note">❓ Varies — ask Father: ${esc(s.father)}</p>` : ''}${aiBtns(id, v)}`; }
-    else if (id && q.qt !== 'order') { const t = textOf(id); const st = STEP[realId(id)] || {}; more = `<p style="margin:6px 0 0">${v !== 'ok' && !html ? `<span class="ans">${esc(t)}</span> ` : ''}${spk(t)} <small class="mute">${esc(st.en || (WHOLE[realId(id)] ? '' : ''))}</small>${st.say && v !== 'ok' ? `<br><small class="mute">say: ${esc(st.say)}</small>` : ''}${st.hook && v !== 'ok' ? `<br><small>💡 ${esc(st.hook)}</small>` : ''}${myHook(id) && v !== 'ok' ? `<br><small>💡 <b>Your hook:</b> ${esc(myHook(id))}</small>` : ''}</p>${aiBtns(id, v)}`; }
+    else if (id && q.qt !== 'order') { const t = textOf(id); const st = STEP[realId(id)] || {}; more = `<p style="margin:6px 0 0">${v !== 'ok' && !html ? `<span class="ans">${esc(t)}</span> ` : ''}${spk(t, 'server')} ${slow(t)} <small class="mute">${esc(st.en || (WHOLE[realId(id)] ? '' : ''))}</small>${st.say && v !== 'ok' ? `<br><small class="mute">say: ${esc(st.say)}</small>` : ''}${st.hook && v !== 'ok' ? `<br><small>💡 ${esc(st.hook)}</small>` : ''}${myHook(id) && v !== 'ok' ? `<br><small>💡 <b>Your hook:</b> ${esc(myHook(id))}</small>` : ''}</p>${aiBtns(id, v)}`; }
     ss.fb = { v, html, extra: (extra || '') + more, typos };
     ss.onAnswer(q, v);
     save(); render(); autoEcho(q);
@@ -777,7 +778,7 @@ function autoPlayQ(ss) {
   if (S.settings.autoFather === false && !ss.rehearse) return stopAudio();
   const f = fatherLatin(STEP[q.step]), seq = [];
   if (f) seq.push({ text: f, who: 'father', gap: 500 });
-  if (q.qt === 'intro') { seq.push({ text: textOf(q.id), who: 'server', gap: 900 }); seq.push({ text: textOf(q.id), who: 'server' }); }
+  if (q.qt === 'intro') { const t = textOf(q.id); seq.push(audioFor(t, 'clear') ? { text: t, who: 'clear', gap: 900 } : { text: t, who: 'server', gap: 900 }); seq.push({ text: t, who: 'server' }); }
   if (seq.length) playSeq(seq); else stopAudio();
 }
 function autoEcho(q) {
@@ -1087,7 +1088,7 @@ document.addEventListener('keydown', e => { if (e.key === 'Enter' && VIEW && VIE
 
 // ───────── offline
 if ('serviceWorker' in navigator && /^https?:/.test(location.protocol) && !IN_CLAUDE) {
-  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v5').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
+  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v6').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
 }
 window.__SM = { audioFor, fatherLatin, spoken: heard => VIEW && VIEW.cur && spokenResult(VIEW, VIEW.cur, heard), replaceState, rerender: () => { if (!VIEW || !VIEW.cur) render(); }, view: () => VIEW, realId, kindOf, S: () => S, PATH, mark, CORE_ITEMS, grade, STEP, textOf };
 render();
