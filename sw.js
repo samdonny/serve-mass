@@ -1,6 +1,6 @@
 // Cache-first so the app runs fully offline after one visit. Bump VERSION on every deploy.
-const VERSION = 'servemass-v6';
-const FILES = ['./', './index.html', './app.js', './content.js', './ai.js', './audio/index.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
+const VERSION = 'servemass-v7';
+const FILES = ['./', './index.html', './app.js', './content.js', './ai.js', './audio/index.js', './audio/frz.js', './manifest.webmanifest', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(async c => {
     await c.addAll(FILES);

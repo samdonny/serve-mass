@@ -172,8 +172,39 @@ let SEQ = 0;
 const audioKey = t => words(String(t || '').replace(/\([^)]*\)/g, ' ')).map(norm).join(' ');
 function audioFor(text, who) { const A = window.MASS_AUDIO; if (!A) return null; const k = audioKey(text); if (who === 'clear') return (A.clear && A.clear[k]) || null; return (who && A[who] && A[who][k]) || (A.server && A.server[k]) || (A.father && A.father[k]) || null; }
 function stopAudio() { SEQ++; if (PLAYER) { try { PLAYER.pause(); } catch (e) { } } if ('speechSynthesis' in window) speechSynthesis.cancel(); }
+// Real priest (audio/frz.js): Fr Z's own recording, played line by line from a copy on this device
+// (chosen in More, kept in IndexedDB) or, in the Claude version, from a bundled excerpt. Never in the repo.
+const FRZ = { url: null, off: 0, name: '' };
+const FRZ_DB = 'servemass-frz';
+function frzDB() { return new Promise((res, rej) => { if (!('indexedDB' in window)) return rej(); const r = indexedDB.open(FRZ_DB, 1); r.onupgradeneeded = () => r.result.createObjectStore('f'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+async function frzStore(blob) { const db = await frzDB(); await new Promise((res, rej) => { const tx = db.transaction('f', 'readwrite'); blob ? tx.objectStore('f').put(blob, 'mp3') : tx.objectStore('f').delete('mp3'); tx.oncomplete = res; tx.onerror = () => rej(tx.error); }); }
+async function frzInit() {
+  const T = window.FRZ; if (!T) return;
+  if (T.bundled) { FRZ.url = new URL(T.bundled.src, location.href).href; FRZ.off = T.bundled.offset || 0; FRZ.name = 'bundled'; try { const b = await (await fetch(FRZ.url)).blob(); if (b.size > 1e5) FRZ.url = URL.createObjectURL(b); } catch (e) { } return; }
+  try { const db = await frzDB(); const blob = await new Promise(res => { const g = db.transaction('f').objectStore('f').get('mp3'); g.onsuccess = () => res(g.result); g.onerror = () => res(null); }); if (blob) { FRZ.url = URL.createObjectURL(blob); FRZ.off = 0; FRZ.name = 'saved'; if (TAB === 'more' && !VIEW) render(); } } catch (e) { }
+}
+function frzFor(text, who) {
+  const T = window.FRZ; if (!T || !FRZ.url || who === 'clear' || S.settings.realVoice === false) return null;
+  const k = audioKey(text); return (who && T[who] && T[who][k]) || (T.server && T.server[k]) || (T.father && T.father[k]) || null;
+}
+// Play [start,end] (or a list of them) from Fr Z's file on the shared player, stopping at each end.
+function playClip(v) {
+  const segs = Array.isArray(v[0]) ? v : [v], my = SEQ;
+  const one = ([a, b]) => new Promise(r => {
+    let t = 0;
+    const done = () => { clearInterval(t); if (my === SEQ) { PLAYER.onended = PLAYER.onerror = PLAYER.onloadedmetadata = null; try { PLAYER.pause(); } catch (e) { } } r(); };
+    const start = () => { PLAYER.onseeked = null; if (my !== SEQ) return r(); const p = PLAYER.play(); if (p && p.catch) p.catch(done); const t0 = Date.now(), lim = (b - a) * 1000 + 3000; t = setInterval(() => { if (my !== SEQ || PLAYER.currentTime >= b - FRZ.off || Date.now() - t0 > lim) done(); }, 25); };
+    const go = () => { if (my !== SEQ) return r(); PLAYER.onloadedmetadata = null; try { PLAYER.currentTime = a - FRZ.off; } catch (e) { } if (PLAYER.seeking) PLAYER.onseeked = start; else start(); };
+    PLAYER.onended = PLAYER.onerror = done;
+    if (PLAYER.src !== FRZ.url) { PLAYER.onloadedmetadata = go; PLAYER.src = FRZ.url; PLAYER.load(); }
+    else if (PLAYER.readyState < 1) PLAYER.onloadedmetadata = go; else go();
+  });
+  return (async () => { for (let i = 0; i < segs.length; i++) { if (my !== SEQ) return; await one(segs[i]); if (i < segs.length - 1) await new Promise(r => setTimeout(r, 500)); } })();
+}
 function playOne(text, who) {
   return new Promise(res => {
+    const c = PLAYER && frzFor(text, who);
+    if (c) { playClip(c).then(res, res); return; }
     const f = audioFor(text, who);
     if (f && PLAYER) { PLAYER.onended = PLAYER.onerror = () => res(); PLAYER.src = 'audio/' + f; const p = PLAYER.play(); if (p && p.catch) p.catch(() => res()); return; }
     if (!('speechSynthesis' in window)) return res();
@@ -357,6 +388,28 @@ function mapTabHTML() {
   return `<h1>Sanctuary map</h1><p class="mute">Tap a place to see what happens there.</p>${mapSVG({ tap: true, hi: MAPSEL ? [MAPSEL] : [] })}
   <div class="card">${MAPSEL ? `<b>${esc(M.Z[MAPSEL])}</b><br>${esc(info[MAPSEL])}` : 'Tap a highlighted area.'}</div>`;
 }
+function frzCard() {
+  const T = window.FRZ; if (!T) return '';
+  const on = S.settings.realVoice !== false;
+  const head = `<div class="card"><h3>A real priest: Fr Z</h3><p class="mute">Fr John Zuhlsdorf recorded the Prayers at the Foot of the Altar for people learning them (<a href="${T.page}" target="_blank" rel="noopener">his page</a>). With his recording, every Father line <b>and</b> every one of your lines there plays in his voice. The 🐢 word-by-word takes and the rest of the Mass stay with the recorded voices.</p>`;
+  if (FRZ.url) return head + `<p>✅ ${FRZ.name === 'bundled' ? 'Built into this version.' : 'Saved on this device — works offline.'}</p>
+    <button class="wide" data-tog="realVoice">${on ? '☑' : '☐'} Use Fr Z's voice for the Prayers at the Foot</button>
+    <div class="row"><button data-say="Introibo ad altare Dei." data-who="father">🔊 Father (Fr Z)</button><button data-say="Ad Deum qui laetificat juventutem meam." data-who="server">🔊 You (Fr Z)</button></div>
+    ${FRZ.name === 'saved' ? '<button class="ghost wide" data-act="frzremove">Remove his recording from this device</button>' : ''}</div>`;
+  return head + `<ol style="padding-left:20px"><li>In <b>Safari</b>, press and hold this link and choose <b>Download Linked File</b> (17 MB, about 35 min):<br><a href="${T.mp3}" target="_blank" rel="noopener" style="word-break:break-all">${esc(T.mp3.split('/').pop())}</a></li>
+    <li>Come back here and choose it (it's in Files → Downloads):</li></ol>
+    <input type="file" id="frzfile" accept="audio/mpeg,.mp3" style="margin:6px 0"></div>`;
+}
+document.addEventListener('change', async e => {
+  if (e.target.id !== 'frzfile') return;
+  const f = e.target.files && e.target.files[0]; if (!f) return;
+  const T = window.FRZ;
+  if (Math.abs(f.size - T.bytes) > 4096) { toast(`That file is ${(f.size / 1e6).toFixed(1)} MB; Fr Z's is ${(T.bytes / 1e6).toFixed(1)} MB. Choose "${T.mp3.split('/').pop()}".`); e.target.value = ''; return; }
+  try { await frzStore(f); } catch (err) { toast('Couldn\'t save it on this device: ' + (err && err.message || 'storage refused')); return; }
+  if (FRZ.url && FRZ.name === 'saved') URL.revokeObjectURL(FRZ.url);
+  FRZ.url = URL.createObjectURL(f); FRZ.off = 0; FRZ.name = 'saved'; S.settings.realVoice = true; save(); render();
+  toast('Fr Z\'s recording saved. Try 🔊 Father.');
+});
 function moreHTML() {
   return `<h1>More</h1>
   <div class="card"><h3>Ask Father before Mass</h3>${fatherList()}</div>
@@ -365,6 +418,7 @@ function moreHTML() {
     <button class="wide" data-tog="autoFather">${S.settings.autoFather === false ? '☐' : '☑'} Play Father's line automatically on every question</button>
     <button class="wide" data-tog="autoEcho">${S.settings.autoEcho === false ? '☐' : '☑'} Play your correct line after each answer</button>
     <div class="row"><button data-say="Introibo ad altare Dei." data-who="father">🔊 Father</button><button data-say="Ad Deum qui laetificat juventutem meam." data-who="server">🔊 You</button></div></div>
+  ${frzCard()}
   <div class="card"><h3>Move progress between devices</h3><p class="mute">Copy this code on one device and paste it on the other.</p>
     <div class="row"><button data-act="copyprog">📋 Copy progress</button><button data-act="pasteprog">📥 Paste from clipboard</button></div>
     <p class="mute"><small>Before the flight: in the Claude version tap Copy, then in the home-screen app tap Paste. Same the other way.</small></p>
@@ -1012,6 +1066,7 @@ document.addEventListener('click', e => {
     case 'pasteprog': (navigator.clipboard && navigator.clipboard.readText ? navigator.clipboard.readText() : Promise.reject()).then(importCode, () => { $('#io').focus(); toast('Paste the code into the box below, then tap "Load pasted code".'); }); return;
     case 'rehearse': return startRehearsePicker();
     case 'drill': return startDrill(weakList(), 'Drill: your weakest lines');
+    case 'frzremove': frzStore(null).catch(() => { }); if (FRZ.url) URL.revokeObjectURL(FRZ.url); FRZ.url = null; FRZ.name = ''; stopAudio(); if (PLAYER) PLAYER.removeAttribute('src'); render(); toast('Removed. The recorded voices are back.'); return;
     case 'reset': if (b.dataset.armed) { S = blank(); save(); go('home'); toast('Progress erased.'); } else { b.dataset.armed = '1'; b.textContent = 'Tap again to erase everything'; } return;
   }
 });
@@ -1088,8 +1143,9 @@ document.addEventListener('keydown', e => { if (e.key === 'Enter' && VIEW && VIE
 
 // ───────── offline
 if ('serviceWorker' in navigator && /^https?:/.test(location.protocol) && !IN_CLAUDE) {
-  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v6').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
+  navigator.serviceWorker.register('sw.js').then(() => navigator.serviceWorker.ready).then(() => caches.has('servemass-v7').then(h => { SW_READY = h; if (TAB === 'home' && !VIEW) render(); }));
 }
-window.__SM = { audioFor, fatherLatin, spoken: heard => VIEW && VIEW.cur && spokenResult(VIEW, VIEW.cur, heard), replaceState, rerender: () => { if (!VIEW || !VIEW.cur) render(); }, view: () => VIEW, realId, kindOf, S: () => S, PATH, mark, CORE_ITEMS, grade, STEP, textOf };
+frzInit();
+window.__SM = { audioFor, frzFor, FRZ, playClip, fatherLatin, spoken: heard => VIEW && VIEW.cur && spokenResult(VIEW, VIEW.cur, heard), replaceState, rerender: () => { if (!VIEW || !VIEW.cur) render(); }, view: () => VIEW, realId, kindOf, S: () => S, PATH, mark, CORE_ITEMS, grade, STEP, textOf };
 render();
 })();
